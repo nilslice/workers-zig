@@ -1,0 +1,16 @@
+.{
+    .name = .tcp_echo_zig,
+    .version = "0.1.0",
+    .fingerprint = 0xbe7cc48931ec9d3a,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .@"workers-zig" = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

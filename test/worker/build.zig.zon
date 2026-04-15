@@ -1,0 +1,16 @@
+.{
+    .name = .test_worker,
+    .version = "0.1.0",
+    .fingerprint = 0x86bb84c7cbd840a,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .workers_zig = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

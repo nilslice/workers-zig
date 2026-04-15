@@ -1,0 +1,55 @@
+name = "zig-worker-test"
+main = "zig-out/bin/entry.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = ""
+
+[vars]
+GREETING = "Hello from test worker!"
+
+[[kv_namespaces]]
+binding = "TEST_KV"
+id = "test-kv-id"
+
+[[r2_buckets]]
+binding = "TEST_R2"
+bucket_name = "test-bucket"
+
+[[d1_databases]]
+binding = "TEST_D1"
+database_name = "test-db"
+database_id = "test-db-id"
+
+[durable_objects]
+bindings = [
+  { name = "COUNTER", class_name = "Counter" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Counter"]
+
+[[worker_loaders]]
+binding = "LOADER"
+
+[[queues.producers]]
+binding = "TEST_QUEUE"
+queue = "test-queue"
+
+[[queues.consumers]]
+queue = "test-queue"
+
+[ai]
+binding = "AI"
+
+[[workflows]]
+name = "my-workflow"
+binding = "MY_WORKFLOW"
+class_name = "MyWorkflow"
+
+[[tail_consumers]]
+service = "zig-worker-test"
+
+[triggers]
+crons = ["0 * * * *"]

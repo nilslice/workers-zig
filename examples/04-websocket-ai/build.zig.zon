@@ -1,0 +1,16 @@
+.{
+    .name = .ws_ai_zig,
+    .version = "0.1.0",
+    .fingerprint = 0x7fe2aa3be4fc14d2,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .@"workers-zig" = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

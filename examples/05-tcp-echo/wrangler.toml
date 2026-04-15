@@ -1,0 +1,6 @@
+name = "tcp-echo-zig"
+main = "zig-out/bin/entry.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = ""

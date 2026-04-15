@@ -1,0 +1,14 @@
+name = "kv-r2-zig"
+main = "build/entry.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = ""
+
+[[kv_namespaces]]
+binding = "STORE"
+id = "your-kv-namespace-id"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "your-bucket-name"

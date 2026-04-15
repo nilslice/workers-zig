@@ -1,0 +1,16 @@
+.{
+    .name = .do_counter_zig,
+    .version = "0.1.0",
+    .fingerprint = 0xdbc4272dc050d5f9,
+    .minimum_zig_version = "0.15.0",
+    .dependencies = .{
+        .@"workers-zig" = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

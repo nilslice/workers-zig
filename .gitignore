@@ -1,0 +1,12 @@
+zig-out/
+.zig-cache/
+.context/
+node_modules/
+package.json
+package-lock.json
+*.log
+build/
+.wrangler/
+.DS_Store
+*.wasm
+workers-types/

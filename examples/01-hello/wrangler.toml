@@ -1,0 +1,9 @@
+name = "hello-zig"
+main = "build/entry.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = ""
+
+[vars]
+GREETING = "Hello from Zig on Cloudflare Workers!"

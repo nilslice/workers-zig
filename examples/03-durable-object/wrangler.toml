@@ -1,0 +1,15 @@
+name = "do-counter-zig"
+main = "build/entry.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = ""
+
+[durable_objects]
+bindings = [
+  { name = "COUNTER", class_name = "Counter" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Counter"]

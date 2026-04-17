@@ -1788,6 +1788,74 @@ const env_imports = {
   // -- Time ------------------------------------------------------------------
   js_now() { return Date.now(); },
 
+  // -- Artifacts (JSPI-suspending) -------------------------------------------
+  artifacts_create: susp(async (nsH, np, nl, op, ol) => {
+    const ns = get(nsH);
+    const name = readStr(np, nl);
+    const opts = ol > 0 ? JSON.parse(readStr(op, ol)) : undefined;
+    const result = await ns.create(name, opts);
+    const repoH = store(result.repo);
+    return store(JSON.stringify({
+      name: result.name,
+      remote: result.remote,
+      token: result.token ?? null,
+      expiresAt: result.expiresAt ?? null,
+      defaultBranch: result.defaultBranch ?? null,
+      repoHandle: repoH,
+    }));
+  }),
+  artifacts_get: susp(async (nsH, np, nl) => {
+    const ns = get(nsH);
+    const repo = await ns.get(readStr(np, nl));
+    if (!repo) return 0;
+    return store(repo);
+  }),
+  artifacts_list: susp(async (nsH, op, ol) => {
+    const ns = get(nsH);
+    const opts = ol > 0 ? JSON.parse(readStr(op, ol)) : undefined;
+    const result = await ns.list(opts);
+    return store(JSON.stringify(result));
+  }),
+  artifacts_delete: susp(async (nsH, np, nl) => {
+    const ns = get(nsH);
+    const ok = await ns.delete(readStr(np, nl));
+    return ok ? 1 : 0;
+  }),
+  artifacts_repo_info: susp(async (repoH) => {
+    const repo = get(repoH);
+    const info = await repo.info();
+    if (!info) return 0;
+    return store(JSON.stringify(info));
+  }),
+  artifacts_repo_create_token: susp(async (repoH, sp, sl, ttl) => {
+    const repo = get(repoH);
+    const scope = sl > 0 ? readStr(sp, sl) : undefined;
+    const result = await repo.createToken(scope, ttl > 0 ? ttl : undefined);
+    return store(JSON.stringify(result));
+  }),
+  artifacts_repo_validate_token: susp(async (repoH, tp, tl) => {
+    const repo = get(repoH);
+    const result = await repo.validateToken(readStr(tp, tl));
+    return store(JSON.stringify(result));
+  }),
+  artifacts_repo_list_tokens: susp(async (repoH) => {
+    const repo = get(repoH);
+    const result = await repo.listTokens();
+    return store(JSON.stringify(result));
+  }),
+  artifacts_repo_revoke_token: susp(async (repoH, tp, tl) => {
+    const repo = get(repoH);
+    const ok = await repo.revokeToken(readStr(tp, tl));
+    return ok ? 1 : 0;
+  }),
+  artifacts_repo_fork: susp(async (repoH, np, nl, op, ol) => {
+    const repo = get(repoH);
+    const name = readStr(np, nl);
+    const opts = ol > 0 ? JSON.parse(readStr(op, ol)) : undefined;
+    const result = await repo.fork(name, opts);
+    return store(JSON.stringify(result));
+  }),
+
   // -- Console ---------------------------------------------------------------
   console_log(ptr, len) { console.log(readStr(ptr, len)); },
   console_error(ptr, len) { console.error(readStr(ptr, len)); },

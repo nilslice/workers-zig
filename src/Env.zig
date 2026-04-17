@@ -15,6 +15,7 @@ pub const DispatchNamespace = @import("DispatchNamespace.zig");
 pub const Vectorize = @import("Vectorize.zig");
 pub const Workflow = @import("Workflow.zig");
 pub const SendEmail = @import("SendEmail.zig");
+pub const Artifacts = @import("Artifacts.zig");
 
 handle: js.Handle,
 allocator: std.mem.Allocator,
@@ -109,4 +110,8 @@ pub fn workflow(self: *const Env, comptime name: []const u8) !Workflow {
 
 pub fn sendEmail(self: *const Env, comptime name: []const u8) !SendEmail {
     return self.binding(SendEmail, name);
+}
+
+pub fn artifacts(self: *const Env, comptime name: []const u8) !Artifacts {
+    return self.binding(Artifacts, name);
 }

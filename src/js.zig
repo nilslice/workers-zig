@@ -406,6 +406,20 @@ pub extern "env" fn email_reply(msg_h: Handle, raw_ptr: [*]const u8, raw_len: u3
 // -- Send Email ---------------------------------------------------------------
 pub extern "env" fn send_email(binding_h: Handle, json_ptr: [*]const u8, json_len: u32) Handle;
 
+// -- Artifacts (JSPI-suspending) ---------------------------------------------
+// Namespace-level
+pub extern "env" fn artifacts_create(ns: Handle, name_ptr: [*]const u8, name_len: u32, opts_ptr: [*]const u8, opts_len: u32) Handle;
+pub extern "env" fn artifacts_get(ns: Handle, name_ptr: [*]const u8, name_len: u32) Handle;
+pub extern "env" fn artifacts_list(ns: Handle, opts_ptr: [*]const u8, opts_len: u32) Handle;
+pub extern "env" fn artifacts_delete(ns: Handle, name_ptr: [*]const u8, name_len: u32) u32;
+// Repo handle
+pub extern "env" fn artifacts_repo_info(repo: Handle) Handle;
+pub extern "env" fn artifacts_repo_create_token(repo: Handle, scope_ptr: [*]const u8, scope_len: u32, ttl: u32) Handle;
+pub extern "env" fn artifacts_repo_validate_token(repo: Handle, token_ptr: [*]const u8, token_len: u32) Handle;
+pub extern "env" fn artifacts_repo_list_tokens(repo: Handle) Handle;
+pub extern "env" fn artifacts_repo_revoke_token(repo: Handle, token_ptr: [*]const u8, token_len: u32) u32;
+pub extern "env" fn artifacts_repo_fork(repo: Handle, name_ptr: [*]const u8, name_len: u32, opts_ptr: [*]const u8, opts_len: u32) Handle;
+
 // -- Console -----------------------------------------------------------------
 pub extern "env" fn console_log(ptr: [*]const u8, len: u32) void;
 pub extern "env" fn console_error(ptr: [*]const u8, len: u32) void;

@@ -315,9 +315,10 @@ const WebSocket = require('ws');
 }
 
 # Check if ws module is available, install if needed
-if ! node -e "require('ws')" 2>/dev/null; then
+if ! (cd worker && node -e "require('ws')" 2>/dev/null); then
   echo "  Installing ws module for WebSocket tests..."
-  (cd worker && npm install ws 2>/dev/null)
+  (cd worker && npm install --no-audit --no-fund ws 2>/dev/null)
+  sleep 2  # let wrangler settle after file changes
 fi
 
 ws_test "WS echo text" "/ws/echo" "
@@ -768,6 +769,40 @@ check_body     "Get workflow instance"       GET "/workflow/get"            "tes
 check_contains "Workflow status"             GET "/workflow/status"         "status="
 check_contains "Create auto-id instance"     GET "/workflow/create-auto-id" "id="
 check_body     "Terminate workflow"          GET "/workflow/terminate"      "terminated"
+
+# -------------------------------------------------------------------
+# Artifacts tests
+# -------------------------------------------------------------------
+echo ""
+echo "--- Artifacts ---"
+art_body=$(curl -s "$BASE/artifacts/create" 2>/dev/null)
+if [ "$art_body" = "created" ]; then
+  echo "  PASS: Artifacts create repo"
+  PASS=$((PASS + 1))
+  check_body     "Artifacts get + info"       GET "/artifacts/get"      "info-ok"
+  check_body     "Artifacts create token"     GET "/artifacts/token"    "token-ok"
+  check_body     "Artifacts list repos"       GET "/artifacts/list"     "list-ok"
+  check_body     "Artifacts fork repo"        GET "/artifacts/fork"     "fork-ok"
+  # Import from public GitHub repo (requires CLOUDFLARE_API_TOKEN env var)
+  import_body=$(curl -s "$BASE/artifacts/import" 2>/dev/null)
+  if [ "$import_body" = "import-ok" ]; then
+    echo "  PASS: Artifacts import (github.com/nilslice/workers-zig)"
+    PASS=$((PASS + 1))
+  elif [ "$import_body" = "import-no-token" ]; then
+    echo "  PASS: Artifacts import — skipped (no CLOUDFLARE_API_TOKEN)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: Artifacts import (got: $import_body)"
+    FAIL=$((FAIL + 1))
+  fi
+  check_body     "Artifacts cleanup"          GET "/artifacts/cleanup"  "cleaned"
+elif [ "$art_body" = "artifacts-not-available" ]; then
+  echo "  PASS: Artifacts — skipped (binding not available in local dev)"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: Artifacts create (got: $art_body)"
+  FAIL=$((FAIL + 1))
+fi
 
 # -------------------------------------------------------------------
 # Tail / Trace tests

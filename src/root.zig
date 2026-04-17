@@ -33,6 +33,7 @@ pub const Workflow = @import("Workflow.zig");
 pub const Tail = @import("Tail.zig");
 pub const EmailMessage = @import("EmailMessage.zig");
 pub const SendEmail = @import("SendEmail.zig");
+pub const Artifacts = @import("Artifacts.zig");
 pub const Router = @import("Router.zig");
 pub const js = @import("js.zig");
 
@@ -49,6 +50,15 @@ pub fn fetch(allocator: std.mem.Allocator, url: []const u8, options: Fetch.Optio
 /// Return the current time as milliseconds since the Unix epoch (Date.now()).
 pub fn now() f64 {
     return js.js_now();
+}
+
+/// Return an `std.Io` instance suitable for use in Workers isolates.
+///
+/// Workers run single-threaded inside a V8 isolate, so the stdlib's
+/// `init_single_threaded` vtable is exactly what we want: its `now` routes
+/// to WASI `clock_time_get` and its `randomSecure` routes to `random_get`.
+pub fn io() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
 }
 
 /// Sleep for the given number of milliseconds (JSPI-suspending).

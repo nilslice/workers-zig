@@ -36,9 +36,9 @@ pub const Counter = struct {
         if (std.mem.eql(u8, path, "/set-alarm")) {
             // Set alarm for 100ms from now
             const body = (try request.body()) orelse "100";
-            const delay = std.fmt.parseInt(u64, body, 10) catch 100;
-            const now_ms: f64 = @floatFromInt(std.time.milliTimestamp());
-            storage.setAlarm(now_ms + @as(f64, @floatFromInt(delay)));
+            const delay = std.fmt.parseInt(i64, body, 10) catch 100;
+            const now_ms = std.Io.Clock.real.now(workers.io()).toMilliseconds();
+            storage.setAlarm(@floatFromInt(now_ms + delay));
             return workers.Response.ok("alarm-set");
         }
 
@@ -363,6 +363,11 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
     // -- Workflow tests -----------------------------------------------------
     if (std.mem.startsWith(u8, path, "/workflow")) {
         return handleWorkflow(request, env, path);
+    }
+
+    // -- Artifacts tests -------------------------------------------------------
+    if (std.mem.startsWith(u8, path, "/artifacts")) {
+        return handleArtifacts(request, env, path);
     }
 
     // -- Tail verification tests ---------------------------------------------
@@ -1271,18 +1276,18 @@ fn handleContainer(_: *workers.Request, _: *workers.Env, path: []const u8) !work
 // Stdlib tests — verify Zig standard library works via WASI shim
 // ---------------------------------------------------------------------------
 fn handleStdlib(_: *workers.Request, _: *workers.Env, path: []const u8) !workers.Response {
-    // -- std.time.milliTimestamp() --
+    // -- std.Io clock (compiles to WASI clock_time_get) --
     if (std.mem.eql(u8, path, "/stdlib/time")) {
-        const ms = std.time.milliTimestamp();
+        const ms = std.Io.Clock.real.now(workers.io()).toMilliseconds();
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ms={d}", .{ms}) catch "error";
         return workers.Response.ok(msg);
     }
 
-    // -- std.crypto.random --
+    // -- random bytes via std.Io (compiles to WASI random_get) --
     if (std.mem.eql(u8, path, "/stdlib/random")) {
         var bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&bytes);
+        workers.io().random(&bytes);
         // Verify it's not all zeros (astronomically unlikely for real randomness)
         var all_zero = true;
         for (bytes) |b| {
@@ -2064,6 +2069,132 @@ fn handleRouterWildcard(_: *workers.Request, _: *workers.Env, _: *router.Params)
 
 fn handleRouterMiddleware(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
     return workers.Response.ok("middleware-ok");
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts handlers
+// ---------------------------------------------------------------------------
+fn handleArtifacts(_: *workers.Request, env: *workers.Env, path: []const u8) !workers.Response {
+    // Artifacts may not be available in local dev — handle gracefully.
+    const arts = env.artifacts("ARTIFACTS") catch {
+        return workers.Response.ok("artifacts-not-available");
+    };
+
+    if (std.mem.eql(u8, path, "/artifacts/create")) {
+        const result = arts.create("test-repo", .{
+            .description = "integration test repo",
+        }) catch |e| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "create-error: {s}", .{@errorName(e)}) catch "error";
+            return workers.Response.ok(msg);
+        };
+        // Verify we got a name and remote back
+        if (result.remote.len > 0 and result.name.len > 0) {
+            return workers.Response.ok("created");
+        }
+        return workers.Response.ok("create-empty");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/get")) {
+        if (arts.get("test-repo") catch null) |repo| {
+            const info_json = repo.info() catch {
+                return workers.Response.ok("info-error");
+            };
+            if (info_json) |info| {
+                // Just check it's valid JSON containing "remote"
+                if (std.mem.indexOf(u8, info, "remote") != null) {
+                    return workers.Response.ok("info-ok");
+                }
+            }
+            return workers.Response.ok("info-empty");
+        }
+        return workers.Response.ok("not-found");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/token")) {
+        if (arts.get("test-repo") catch null) |repo| {
+            const tok_json = repo.createToken(.read, 3600) catch {
+                return workers.Response.ok("token-error");
+            };
+            if (std.mem.indexOf(u8, tok_json, "plaintext") != null or std.mem.indexOf(u8, tok_json, "scope") != null) {
+                return workers.Response.ok("token-ok");
+            }
+            return workers.Response.ok("token-unexpected");
+        }
+        return workers.Response.ok("not-found");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/list")) {
+        const list_json = arts.list(.{ .limit = 10 }) catch {
+            return workers.Response.ok("list-error");
+        };
+        if (std.mem.indexOf(u8, list_json, "repos") != null) {
+            return workers.Response.ok("list-ok");
+        }
+        return workers.Response.ok("list-unexpected");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/fork")) {
+        if (arts.get("test-repo") catch null) |repo| {
+            const fork_json = repo.fork("test-repo-fork", .{
+                .description = "fork for testing",
+                .default_branch_only = true,
+            }) catch {
+                return workers.Response.ok("fork-error");
+            };
+            if (std.mem.indexOf(u8, fork_json, "remote") != null) {
+                return workers.Response.ok("fork-ok");
+            }
+            return workers.Response.ok("fork-unexpected");
+        }
+        return workers.Response.ok("not-found");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/import")) {
+        // Import a public GitHub repo via the REST API.
+        // Requires CLOUDFLARE_API_TOKEN env var.
+        const api_token = (try env.get("CLOUDFLARE_API_TOKEN")) orelse {
+            return workers.Response.ok("import-no-token");
+        };
+        const resp_json = arts.importRepo("workers-zig-import", api_token, .{
+            .url = "https://github.com/nilslice/workers-zig",
+            .branch = "main",
+            .depth = 1,
+        }) catch {
+            return workers.Response.ok("import-error");
+        };
+        // Verify the response contains "remote" (a successful import)
+        if (std.mem.indexOf(u8, resp_json, "remote") != null) {
+            // Also verify the repo is accessible via the binding
+            if (arts.get("workers-zig-import") catch null) |repo| {
+                const info_json = repo.info() catch {
+                    return workers.Response.ok("import-ok-no-info");
+                };
+                if (info_json) |info| {
+                    if (std.mem.indexOf(u8, info, "workers-zig-import") != null) {
+                        return workers.Response.ok("import-ok");
+                    }
+                }
+                return workers.Response.ok("import-ok-no-name");
+            }
+            return workers.Response.ok("import-ok-not-found");
+        }
+        // Check if it's an error response
+        if (std.mem.indexOf(u8, resp_json, "error") != null) {
+            return workers.Response.ok("import-api-error");
+        }
+        return workers.Response.ok("import-unexpected");
+    }
+
+    if (std.mem.eql(u8, path, "/artifacts/cleanup")) {
+        // Clean up test repos
+        _ = arts.delete("test-repo-fork");
+        _ = arts.delete("test-repo");
+        _ = arts.delete("workers-zig-import");
+        return workers.Response.ok("cleaned");
+    }
+
+    return workers.Response.err(.not_found, "unknown artifacts test");
 }
 
 // ---------------------------------------------------------------------------

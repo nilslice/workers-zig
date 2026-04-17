@@ -6,7 +6,7 @@ Built on [JSPI](https://v8.dev/blog/jspi) (JavaScript Promise Integration), `wor
 
 ## Features
 
-- **Full Workers platform coverage** — KV, R2, D1, Durable Objects, Queues, AI, Workflows, Vectorize, Hyperdrive, Analytics Engine, Rate Limiting, Service Bindings, and more
+- **Full Workers platform coverage** — KV, R2, D1, Durable Objects, Queues, AI, Workflows, Vectorize, Hyperdrive, Analytics Engine, Rate Limiting, Service Bindings, Artifacts, and more
 - **HTTP Router** — path params, wildcards, method filtering, comptime route tables
 - **Durable Objects** — define classes as Zig structs, auto-detected at build time
 - **Workflows** — define steps with `step.do()`, `step.sleep()`, `step.waitForEvent()`
@@ -330,6 +330,54 @@ binding = "MY_WORKFLOW"
 class_name = "MyWorkflow"
 ```
 
+### Artifacts
+
+```zig
+const arts = try env.artifacts("ARTIFACTS");
+
+// Create a repo
+const result = try arts.create("my-repo", .{});
+const remote = result.remote;
+const token = result.token;
+
+// Get a repo handle
+if (try arts.get("my-repo")) |repo| {
+    // Get repo info (JSON)
+    const info_json = try repo.info();
+
+    // Mint a read token valid for 1 hour
+    const tok_json = try repo.createToken(.read, 3600);
+
+    // Fork into a new repo
+    const fork_json = try repo.fork("my-repo-fork", .{
+        .description = "Fork for testing",
+        .default_branch_only = true,
+    });
+}
+
+// List repos
+const list_json = try arts.list(.{ .limit = 20 });
+
+// Import a public GitHub repo (uses REST API, requires API token)
+const api_token = (try env.get("CLOUDFLARE_API_TOKEN")).?;
+const import_json = try arts.importRepo("my-mirror", api_token, .{
+    .url = "https://github.com/nilslice/workers-zig",
+    .branch = "main",
+    .depth = 1,
+});
+
+// Delete a repo
+_ = arts.delete("my-repo");
+```
+
+Configure the binding in `wrangler.toml`:
+
+```toml
+[[artifacts]]
+binding = "ARTIFACTS"
+namespace = "default"
+```
+
 ### WebSockets
 
 ```zig
@@ -445,6 +493,7 @@ pub fn tail(events: []const workers.Tail.TraceItem, env: *workers.Env, _: *worke
 | **HTMLRewriter** | `workers.HTMLRewriter` | Streaming HTML transformation |
 | **FormData** | `workers.FormData` | Multipart form data parsing |
 | **EventSource** | `workers.EventSource` | Server-Sent Events (SSE) |
+| **Artifacts** | `env.artifacts("ARTIFACTS")` | Durable Git repos (create, fork, tokens) |
 | **Container** | `workers.Container` | Container Workers |
 
 ### Convenience Functions

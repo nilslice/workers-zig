@@ -1,6 +1,5 @@
 const std = @import("std");
 const js = @import("js.zig");
-const Fetch = @import("Fetch.zig");
 
 // ===========================================================================
 // Artifacts — durable Git repos on demand.
@@ -72,64 +71,38 @@ pub fn delete(self: *const Artifacts, name: []const u8) bool {
     return js.artifacts_delete(self.handle, name.ptr, @intCast(name.len)) != 0;
 }
 
-pub const ImportOptions = struct {
+pub const ImportSource = struct {
     url: []const u8,
     branch: ?[]const u8 = null,
     depth: ?u32 = null,
     read_only: ?bool = null,
 };
 
-/// Import a public HTTPS remote into this namespace via the REST API.
-/// Requires a Cloudflare API token with Artifacts > Edit permission.
-/// Returns the raw JSON response body on success.
-pub fn importRepo(self: *const Artifacts, name: []const u8, api_token: []const u8, options: ImportOptions) ![]const u8 {
-    const allocator = self.allocator;
+pub const ImportTarget = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    read_only: ?bool = null,
+};
 
-    // Build the REST API URL
-    var url_buf = std.Io.Writer.Allocating.init(allocator);
-    url_buf.writer.writeAll("https://artifacts.cloudflare.net/v1/api/namespaces/default/repos/") catch return error.OutOfMemory;
-    url_buf.writer.writeAll(name) catch return error.OutOfMemory;
-    url_buf.writer.writeAll("/import") catch return error.OutOfMemory;
-    const api_url = url_buf.toOwnedSlice() catch return error.OutOfMemory;
+pub const ImportResult = struct {
+    remote: []const u8,
+    token: ?[]const u8,
+    expires_at: ?[]const u8,
+    default_branch: ?[]const u8,
+    repo: Repo,
+};
 
-    // Build the request body JSON
-    var w = std.Io.Writer.Allocating.init(allocator);
-    const writer = &w.writer;
-    writer.writeAll("{\"url\":\"") catch return error.JsonSerializationFailed;
-    writer.writeAll(options.url) catch return error.JsonSerializationFailed;
-    writer.writeAll("\"") catch return error.JsonSerializationFailed;
-    if (options.branch) |branch| {
-        writer.writeAll(",\"branch\":\"") catch return error.JsonSerializationFailed;
-        writer.writeAll(branch) catch return error.JsonSerializationFailed;
-        writer.writeAll("\"") catch return error.JsonSerializationFailed;
-    }
-    if (options.depth) |depth| {
-        writer.writeAll(",\"depth\":") catch return error.JsonSerializationFailed;
-        writer.print("{d}", .{depth}) catch return error.JsonSerializationFailed;
-    }
-    if (options.read_only) |ro| {
-        writer.writeAll(if (ro) ",\"read_only\":true" else ",\"read_only\":false") catch return error.JsonSerializationFailed;
-    }
-    writer.writeAll("}") catch return error.JsonSerializationFailed;
-    const body = w.toOwnedSlice() catch return error.OutOfMemory;
-
-    // Build auth header value
-    var auth_buf = std.Io.Writer.Allocating.init(allocator);
-    auth_buf.writer.writeAll("Bearer ") catch return error.OutOfMemory;
-    auth_buf.writer.writeAll(api_token) catch return error.OutOfMemory;
-    const auth_value = auth_buf.toOwnedSlice() catch return error.OutOfMemory;
-
-    var resp = try Fetch.send(allocator, api_url, .{
-        .method = .POST,
-        .headers = &.{
-            .{ .name = "Authorization", .value = auth_value },
-            .{ .name = "Content-Type", .value = "application/json" },
-        },
-        .body = .{ .bytes = body },
-    });
-    defer resp.deinit();
-
-    return try resp.text();
+/// Import a public Git repository into this namespace.
+pub fn import(self: *const Artifacts, source: ImportSource, target: ImportTarget) !ImportResult {
+    const opts_json = try buildImportOptionsJson(self.allocator, source, target);
+    const h = js.artifacts_import(
+        self.handle,
+        opts_json.ptr,
+        @intCast(opts_json.len),
+    );
+    if (h == js.null_handle) return error.ArtifactsImportFailed;
+    const json_str = try js.readString(h, self.allocator);
+    return parseImportResult(self.allocator, json_str);
 }
 
 // ---- Repo — handle to a specific repo ------------------------------------
@@ -336,4 +309,176 @@ fn parseCreateResult(allocator: std.mem.Allocator, json: []const u8) !CreateResu
         .default_branch = branch_val,
         .repo = .{ .handle = repo_handle, .allocator = allocator },
     };
+}
+
+fn buildImportOptionsJson(allocator: std.mem.Allocator, source: ImportSource, target: ImportTarget) ![]const u8 {
+    var w = std.Io.Writer.Allocating.init(allocator);
+    const writer = &w.writer;
+
+    writer.writeAll("{\"source\":{") catch return error.JsonSerializationFailed;
+    writer.writeAll("\"url\":\"") catch return error.JsonSerializationFailed;
+    writer.writeAll(source.url) catch return error.JsonSerializationFailed;
+    writer.writeAll("\"") catch return error.JsonSerializationFailed;
+
+    if (source.branch) |branch| {
+        writer.writeAll(",\"branch\":\"") catch return error.JsonSerializationFailed;
+        writer.writeAll(branch) catch return error.JsonSerializationFailed;
+        writer.writeAll("\"") catch return error.JsonSerializationFailed;
+    }
+    if (source.depth) |depth| {
+        writer.writeAll(",\"depth\":") catch return error.JsonSerializationFailed;
+        writer.print("{d}", .{depth}) catch return error.JsonSerializationFailed;
+    }
+    if (source.read_only) |ro| {
+        writer.writeAll(if (ro) ",\"readOnly\":true" else ",\"readOnly\":false") catch return error.JsonSerializationFailed;
+    }
+
+    writer.writeAll("},\"target\":{") catch return error.JsonSerializationFailed;
+    writer.writeAll("\"name\":\"") catch return error.JsonSerializationFailed;
+    writer.writeAll(target.name) catch return error.JsonSerializationFailed;
+    writer.writeAll("\"") catch return error.JsonSerializationFailed;
+
+    if (target.description) |desc| {
+        writer.writeAll(",\"description\":\"") catch return error.JsonSerializationFailed;
+        writer.writeAll(desc) catch return error.JsonSerializationFailed;
+        writer.writeAll("\"") catch return error.JsonSerializationFailed;
+    }
+    if (target.read_only) |ro| {
+        writer.writeAll(if (ro) ",\"readOnly\":true" else ",\"readOnly\":false") catch return error.JsonSerializationFailed;
+    }
+
+    writer.writeAll("}}") catch return error.JsonSerializationFailed;
+    return w.toOwnedSlice() catch return error.OutOfMemory;
+}
+
+fn parseImportResult(allocator: std.mem.Allocator, json: []const u8) !ImportResult {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch {
+        return error.InvalidJson;
+    };
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    const remote_val = if (obj.get("remote")) |v| switch (v) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => "",
+    } else "";
+    const token_val: ?[]const u8 = if (obj.get("token")) |v| switch (v) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+    const expires_val: ?[]const u8 = if (obj.get("expiresAt")) |v| switch (v) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+    const branch_val: ?[]const u8 = if (obj.get("defaultBranch")) |v| switch (v) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+
+    var repo_handle: js.Handle = js.null_handle;
+    if (obj.get("repoHandle")) |rh| {
+        switch (rh) {
+            .integer => |i| repo_handle = @intCast(i),
+            else => {},
+        }
+    }
+
+    return .{
+        .remote = remote_val,
+        .token = token_val,
+        .expires_at = expires_val,
+        .default_branch = branch_val,
+        .repo = .{ .handle = repo_handle, .allocator = allocator },
+    };
+}
+
+// ---- Unit tests -----------------------------------------------------------
+
+test "buildImportOptionsJson — minimal (url and name only)" {
+    const json = try buildImportOptionsJson(std.testing.allocator, .{
+        .url = "https://github.com/cloudflare/workers-sdk",
+    }, .{
+        .name = "workers-sdk",
+    });
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"source\":{\"url\":\"https://github.com/cloudflare/workers-sdk\"},\"target\":{\"name\":\"workers-sdk\"}}",
+        json,
+    );
+}
+
+test "buildImportOptionsJson — all source options" {
+    const json = try buildImportOptionsJson(std.testing.allocator, .{
+        .url = "https://github.com/cloudflare/workers-sdk",
+        .branch = "main",
+        .depth = 1,
+        .read_only = true,
+    }, .{
+        .name = "workers-sdk",
+    });
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"source\":{\"url\":\"https://github.com/cloudflare/workers-sdk\",\"branch\":\"main\",\"depth\":1,\"readOnly\":true},\"target\":{\"name\":\"workers-sdk\"}}",
+        json,
+    );
+}
+
+test "buildImportOptionsJson — all source and target options" {
+    const json = try buildImportOptionsJson(std.testing.allocator, .{
+        .url = "https://github.com/cloudflare/workers-sdk",
+        .branch = "main",
+        .depth = 1,
+        .read_only = false,
+    }, .{
+        .name = "workers-sdk-mirror",
+        .description = "Mirror of workers-sdk",
+        .read_only = true,
+    });
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"source\":{\"url\":\"https://github.com/cloudflare/workers-sdk\",\"branch\":\"main\",\"depth\":1,\"readOnly\":false},\"target\":{\"name\":\"workers-sdk-mirror\",\"description\":\"Mirror of workers-sdk\",\"readOnly\":true}}",
+        json,
+    );
+}
+
+test "parseImportResult — full result with all fields" {
+    const json =
+        \\{"remote":"https://artifacts.cloudflare.net/r/my-repo",
+        \\ "token":"cf_artifacts_abc123",
+        \\ "expiresAt":"2024-01-01T00:00:00Z",
+        \\ "defaultBranch":"main",
+        \\ "repoHandle":42}
+    ;
+    const result = try parseImportResult(std.testing.allocator, json);
+    defer {
+        std.testing.allocator.free(result.remote);
+        if (result.token) |t| std.testing.allocator.free(t);
+        if (result.expires_at) |e| std.testing.allocator.free(e);
+        if (result.default_branch) |b| std.testing.allocator.free(b);
+    }
+    try std.testing.expectEqualStrings("https://artifacts.cloudflare.net/r/my-repo", result.remote);
+    try std.testing.expect(result.token != null);
+    try std.testing.expectEqualStrings("cf_artifacts_abc123", result.token.?);
+    try std.testing.expect(result.expires_at != null);
+    try std.testing.expectEqualStrings("2024-01-01T00:00:00Z", result.expires_at.?);
+    try std.testing.expect(result.default_branch != null);
+    try std.testing.expectEqualStrings("main", result.default_branch.?);
+    try std.testing.expectEqual(@as(js.Handle, 42), result.repo.handle);
+}
+
+test "parseImportResult — minimal result (null optional fields)" {
+    const json =
+        \\{"remote":"https://artifacts.cloudflare.net/r/my-repo",
+        \\ "token":null,
+        \\ "expiresAt":null,
+        \\ "defaultBranch":null,
+        \\ "repoHandle":0}
+    ;
+    const result = try parseImportResult(std.testing.allocator, json);
+    defer std.testing.allocator.free(result.remote);
+    try std.testing.expectEqualStrings("https://artifacts.cloudflare.net/r/my-repo", result.remote);
+    try std.testing.expect(result.token == null);
+    try std.testing.expect(result.expires_at == null);
+    try std.testing.expect(result.default_branch == null);
+    try std.testing.expectEqual(@as(js.Handle, 0), result.repo.handle);
 }

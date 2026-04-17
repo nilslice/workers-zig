@@ -412,6 +412,7 @@ pub extern "env" fn artifacts_create(ns: Handle, name_ptr: [*]const u8, name_len
 pub extern "env" fn artifacts_get(ns: Handle, name_ptr: [*]const u8, name_len: u32) Handle;
 pub extern "env" fn artifacts_list(ns: Handle, opts_ptr: [*]const u8, opts_len: u32) Handle;
 pub extern "env" fn artifacts_delete(ns: Handle, name_ptr: [*]const u8, name_len: u32) u32;
+pub extern "env" fn artifacts_import(ns: Handle, opts_ptr: [*]const u8, opts_len: u32) Handle;
 // Repo handle
 pub extern "env" fn artifacts_repo_info(repo: Handle) Handle;
 pub extern "env" fn artifacts_repo_create_token(repo: Handle, scope_ptr: [*]const u8, scope_len: u32, ttl: u32) Handle;

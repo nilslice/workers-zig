@@ -1821,6 +1821,22 @@ const env_imports = {
     const ok = await ns.delete(readStr(np, nl));
     return ok ? 1 : 0;
   }),
+  artifacts_import: susp(async (nsH, op, ol) => {
+    const ns = get(nsH);
+    const opts = ol > 0 ? JSON.parse(readStr(op, ol)) : {};
+    const result = await ns.import({
+      source: opts.source,
+      target: opts.target,
+    });
+    const repoH = store(result.repo);
+    return store(JSON.stringify({
+      remote: result.remote,
+      token: result.token ?? null,
+      expiresAt: result.expiresAt ?? null,
+      defaultBranch: result.defaultBranch ?? null,
+      repoHandle: repoH,
+    }));
+  }),
   artifacts_repo_info: susp(async (repoH) => {
     const repo = get(repoH);
     const info = await repo.info();

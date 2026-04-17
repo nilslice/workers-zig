@@ -358,13 +358,20 @@ if (try arts.get("my-repo")) |repo| {
 // List repos
 const list_json = try arts.list(.{ .limit = 20 });
 
-// Import a public GitHub repo (uses REST API, requires API token)
-const api_token = (try env.get("CLOUDFLARE_API_TOKEN")).?;
-const import_json = try arts.importRepo("my-mirror", api_token, .{
-    .url = "https://github.com/nilslice/workers-zig",
-    .branch = "main",
-    .depth = 1,
+// Import a public GitHub repo
+const result = try arts.import(.{
+    .source = .{
+        .url = "https://github.com/nilslice/workers-zig",
+        .branch = "main",
+        .depth = 1,
+    },
+    .target = .{
+        .name = "my-mirror",
+    },
 });
+
+// Access imported repo via result.repo
+const info = try result.repo.info();
 
 // Delete a repo
 _ = arts.delete("my-repo");

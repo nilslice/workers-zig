@@ -9,7 +9,7 @@ const Response = @import("Response.zig");
 /// `write()` call flushes data to the client immediately.
 ///
 /// ```zig
-/// var stream = workers.StreamingResponse.start(.{ .status = .ok });
+/// var stream = StreamingResponse.start(.{ .status = .ok });
 /// stream.setHeader("content-type", "text/event-stream");
 ///
 /// try stream.write("data: hello\n\n");

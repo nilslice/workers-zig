@@ -36,7 +36,7 @@ pub const SocketInfo = struct {
 /// Create an outbound TCP connection.
 ///
 /// ```zig
-/// const socket = try workers.Socket.connect(allocator, "example.com", 5432, .{
+/// const socket = try Socket.connect(allocator, "example.com", 5432, .{
 ///     .secure_transport = .on,
 /// });
 /// defer socket.close();

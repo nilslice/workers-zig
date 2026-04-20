@@ -82,11 +82,15 @@ pub fn build(b: *std.Build) void {
 ```zig
 // src/main.zig
 const workers = @import("workers-zig");
+const Request = workers.Request;
+const Response = workers.Response;
+const Env = workers.Env;
+const Context = workers.Context;
 
-pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
+pub fn fetch(request: *Request, env: *Env, _: *Context) !Response {
     _ = request;
     _ = env;
-    return workers.Response.ok("Hello from Zig!");
+    return Response.ok("Hello from Zig!");
 }
 ```
 
@@ -157,20 +161,24 @@ The built-in router provides path-parameter extraction and method-based routing 
 
 ```zig
 const workers = @import("workers-zig");
-const router = workers.Router;
+const Request = workers.Request;
+const Response = workers.Response;
+const Env = workers.Env;
+const Context = workers.Context;
+const Router = workers.Router;
 
-pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
-    return router.serve(request, env, &.{
-        router.get("/", handleIndex),
-        router.get("/users/:id", getUser),
-        router.post("/users", createUser),
-        router.all("/health", healthCheck),
-    }) orelse workers.Response.err(.not_found, "Not Found");
+pub fn fetch(request: *Request, env: *Env, _: *Context) !Response {
+    return Router.serve(request, env, &.{
+        Router.get("/", handleIndex),
+        Router.get("/users/:id", getUser),
+        Router.post("/users", createUser),
+        Router.all("/health", healthCheck),
+    }) orelse Response.err(.not_found, "Not Found");
 }
 
-fn getUser(_: *workers.Request, _: *workers.Env, params: *router.Params) !workers.Response {
+fn getUser(_: *Request, _: *Env, params: *Router.Params) !Response {
     const id = params.get("id") orelse "unknown";
-    return workers.Response.ok(id);
+    return Response.ok(id);
 }
 ```
 

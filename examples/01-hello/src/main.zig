@@ -1,29 +1,32 @@
+const std = @import("std");
 const workers = @import("workers-zig");
-const router = workers.Router;
+const Request = workers.Request;
+const Response = workers.Response;
+const Env = workers.Env;
+const Context = workers.Context;
+const Router = workers.Router;
 
-pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
-    return router.serve(request, env, &.{
-        router.get("/", handleIndex),
-        router.get("/greet/:name", handleGreet),
-        router.post("/echo", handleEcho),
-    }) orelse workers.Response.err(.not_found, "Not Found");
+pub fn fetch(request: *Request, env: *Env, ctx: *Context) !Response {
+    return Router.serve(request, env, ctx, &.{
+        Router.get("/", handleIndex),
+        Router.get("/greet/:name", handleGreet),
+        Router.post("/echo", handleEcho),
+    }) orelse Response.err(.not_found, "Not Found");
 }
 
-fn handleIndex(_: *workers.Request, env: *workers.Env, _: *router.Params) !workers.Response {
+fn handleIndex(_: *Request, env: *Env, _: *Context, _: *Router.Params) !Response {
     const greeting = (try env.get("GREETING")) orelse "Hello from Zig on Cloudflare Workers!";
-    return workers.Response.ok(greeting);
+    return Response.ok(greeting);
 }
 
-fn handleGreet(_: *workers.Request, _: *workers.Env, params: *router.Params) !workers.Response {
+fn handleGreet(_: *Request, _: *Env, _: *Context, params: *Router.Params) !Response {
     const name = params.get("name") orelse "world";
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "Hello, {s}!", .{name}) catch "Hello!";
-    return workers.Response.ok(msg);
+    return Response.ok(msg);
 }
 
-fn handleEcho(request: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleEcho(request: *Request, _: *Env, _: *Context, _: *Router.Params) !Response {
     const body = (try request.body()) orelse "";
-    return workers.Response.ok(body);
+    return Response.ok(body);
 }
-
-const std = @import("std");

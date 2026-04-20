@@ -325,7 +325,7 @@ pub fn textGenerationWithOptions(self: *const Ai, model: []const u8, input: Text
 /// chunks one at a time. The `stream` flag is forced on by the JS shim.
 ///
 /// ```zig
-/// var stream = workers.StreamingResponse.start(.{});
+/// var stream = StreamingResponse.start(.{});
 /// stream.setHeader("content-type", "text/event-stream");
 ///
 /// var reader = try ai.textGenerationStream("@cf/meta/llama-3.1-8b-instruct", .{

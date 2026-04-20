@@ -40,9 +40,9 @@ pub fn get(self: *const Env, name: []const u8) !?[]const u8 {
 /// bindings are always static configuration.
 ///
 /// ```zig
-/// const ai = try env.binding(workers.Ai, "AI");
+/// const ai = try env.binding(Ai, "AI");
 /// const kv = try env.binding(workers.KvNamespace, "MY_KV");
-/// const ns = try env.binding(workers.DurableObject.Namespace, "COUNTER");
+/// const ns = try env.binding(DurableObject.Namespace, "COUNTER");
 /// ```
 pub fn binding(self: *const Env, comptime T: type, comptime name: []const u8) !T {
     const h = js.env_get_binding(self.handle, name.ptr, name.len);

@@ -2,6 +2,7 @@ const std = @import("std");
 const Request = @import("Request.zig");
 const Response = @import("Response.zig");
 const Env = @import("Env.zig");
+const Context = @import("Context.zig");
 
 // ===========================================================================
 // Router — path-based HTTP routing with param extraction.
@@ -10,57 +11,57 @@ const Env = @import("Env.zig");
 //
 // **Main fetch handler:**
 // ```zig
-// const router = workers.Router;
+// const Router = workers.Router;
 //
-// pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
-//     return router.serve(request, env, &.{
-//         router.get("/", handleIndex),
-//         router.get("/users/:id", handleGetUser),
-//         router.post("/users", handleCreateUser),
-//         router.get("/posts/:pid/comments/:cid", handleComment),
-//     }) orelse workers.Response.err(.not_found, "Not Found");
+// pub fn fetch(request: *Request, env: *Env, ctx: *Context) !Response {
+//     return Router.serve(request, env, ctx, &.{
+//         Router.get("/", handleIndex),
+//         Router.get("/users/:id", handleGetUser),
+//         Router.post("/users", handleCreateUser),
+//         Router.get("/posts/:pid/comments/:cid", handleComment),
+//     }) orelse Response.err(.not_found, "Not Found");
 // }
 //
-// fn handleGetUser(req: *workers.Request, env: *workers.Env, params: *router.Params) !workers.Response {
+// fn handleGetUser(req: *Request, env: *Env, ctx: *Context, params: *Router.Params) !Response {
 //     const id = params.get("id").?;
-//     return workers.Response.ok(id);
+//     return Response.ok(id);
 // }
 // ```
 //
 // **Durable Object fetch (low-level):**
 // ```zig
-// pub fn fetch(self: *MyDO, request: *workers.Request) !workers.Response {
-//     const path = router.extractPath(try request.url());
-//     var params: router.Params = .{};
+// pub fn fetch(self: *MyDO, request: *Request) !Response {
+//     const path = Router.extractPath(try request.url());
+//     var params: Router.Params = .{};
 //
-//     if (router.matchPath("/items/:id", path, &params))
+//     if (Router.matchPath("/items/:id", path, &params))
 //         return self.getItem(params.get("id").?);
 //
-//     return workers.Response.err(.not_found, "Not Found");
+//     return Response.err(.not_found, "Not Found");
 // }
 // ```
 //
 // **Middleware (comptime wrapper):**
 // ```zig
-// fn withAuth(comptime handler: router.Handler) router.Handler {
+// fn withAuth(comptime handler: Router.Handler) Router.Handler {
 //     return struct {
-//         fn wrapped(req: *workers.Request, env: *workers.Env, params: *router.Params) !workers.Response {
+//         fn wrapped(req: *Request, env: *Env, ctx: *Context, params: *Router.Params) !Response {
 //             const token = try req.header("Authorization") orelse
-//                 return workers.Response.err(.unauthorized, "missing token");
+//                 return Response.err(.unauthorized, "missing token");
 //             _ = token;
-//             return handler(req, env, params);
+//             return handler(req, env, ctx, params);
 //         }
 //     }.wrapped;
 // }
 //
 // // Usage:
-// router.get("/admin/:id", withAuth(handleAdmin)),
+// Router.get("/admin/:id", withAuth(handleAdmin)),
 // ```
 // ===========================================================================
 
 pub const MAX_PARAMS = 8;
 
-pub const Handler = *const fn (*Request, *Env, *Params) anyerror!Response;
+pub const Handler = *const fn (*Request, *Env, *Context, *Params) anyerror!Response;
 
 pub const Params = struct {
     entries: [MAX_PARAMS]Entry = undefined,
@@ -97,7 +98,7 @@ pub const Route = struct {
 };
 
 /// Match a request against a list of routes and call the first matching handler.
-pub fn serve(request: *Request, env: *Env, comptime routes: []const Route) ?Response {
+pub fn serve(request: *Request, env: *Env, ctx: *Context, comptime routes: []const Route) ?Response {
     const url_str = request.url() catch return null;
     const full_path = extractPath(url_str);
     // Strip query string
@@ -110,7 +111,7 @@ pub fn serve(request: *Request, env: *Env, comptime routes: []const Route) ?Resp
         params.reset();
         const method_ok = if (route.method) |rm| rm == method else true;
         if (method_ok and matchPath(route.pattern, path, &params)) {
-            const result = route.handler(request, env, &params);
+            const result = route.handler(request, env, ctx, &params);
             if (result) |resp| {
                 return resp;
             } else |_| {

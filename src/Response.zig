@@ -54,7 +54,7 @@ pub fn json(data: []const u8) Response {
 /// 200 OK with a JSON body serialized from any Zig value.
 ///
 /// ```zig
-/// return workers.Response.jsonValue(allocator, .{ .ok = true, .count = 42 });
+/// return Response.jsonValue(allocator, .{ .ok = true, .count = 42 });
 /// ```
 pub fn jsonValue(allocator: std.mem.Allocator, data: anytype) !Response {
     const bytes = try std.json.stringifyAlloc(allocator, data, .{});
@@ -93,8 +93,8 @@ pub fn err(code: http.Status, message: []const u8) Response {
 /// Redirect response (302 by default, or specify 301/307/308).
 ///
 /// ```zig
-/// return workers.Response.redirect("/new-location", null);       // 302
-/// return workers.Response.redirect("/moved", .moved_permanently); // 301
+/// return Response.redirect("/new-location", null);       // 302
+/// return Response.redirect("/moved", .moved_permanently); // 301
 /// ```
 pub fn redirect(url: []const u8, code: ?http.Status) Response {
     const s: u32 = if (code) |c| @intFromEnum(c) else 302;

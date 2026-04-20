@@ -2,6 +2,7 @@ const std = @import("std");
 const Request = @import("Request.zig");
 const Response = @import("Response.zig");
 const Env = @import("Env.zig");
+const Context = @import("Context.zig");
 
 // ===========================================================================
 // Router — path-based HTTP routing with param extraction.
@@ -12,8 +13,8 @@ const Env = @import("Env.zig");
 // ```zig
 // const router = workers.Router;
 //
-// pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
-//     return router.serve(request, env, &.{
+// pub fn fetch(request: *workers.Request, env: *workers.Env, ctx: *workers.Context) !workers.Response {
+//     return router.serve(request, env, ctx, &.{
 //         router.get("/", handleIndex),
 //         router.get("/users/:id", handleGetUser),
 //         router.post("/users", handleCreateUser),
@@ -21,7 +22,7 @@ const Env = @import("Env.zig");
 //     }) orelse workers.Response.err(.not_found, "Not Found");
 // }
 //
-// fn handleGetUser(req: *workers.Request, env: *workers.Env, params: *router.Params) !workers.Response {
+// fn handleGetUser(req: *workers.Request, env: *workers.Env, ctx: *workers.Context, params: *router.Params) !workers.Response {
 //     const id = params.get("id").?;
 //     return workers.Response.ok(id);
 // }
@@ -44,11 +45,11 @@ const Env = @import("Env.zig");
 // ```zig
 // fn withAuth(comptime handler: router.Handler) router.Handler {
 //     return struct {
-//         fn wrapped(req: *workers.Request, env: *workers.Env, params: *router.Params) !workers.Response {
+//         fn wrapped(req: *workers.Request, env: *workers.Env, ctx: *workers.Context, params: *router.Params) !workers.Response {
 //             const token = try req.header("Authorization") orelse
 //                 return workers.Response.err(.unauthorized, "missing token");
 //             _ = token;
-//             return handler(req, env, params);
+//             return handler(req, env, ctx, params);
 //         }
 //     }.wrapped;
 // }
@@ -60,7 +61,7 @@ const Env = @import("Env.zig");
 
 pub const MAX_PARAMS = 8;
 
-pub const Handler = *const fn (*Request, *Env, *Params) anyerror!Response;
+pub const Handler = *const fn (*Request, *Env, *Context, *Params) anyerror!Response;
 
 pub const Params = struct {
     entries: [MAX_PARAMS]Entry = undefined,
@@ -97,7 +98,7 @@ pub const Route = struct {
 };
 
 /// Match a request against a list of routes and call the first matching handler.
-pub fn serve(request: *Request, env: *Env, comptime routes: []const Route) ?Response {
+pub fn serve(request: *Request, env: *Env, ctx: *Context, comptime routes: []const Route) ?Response {
     const url_str = request.url() catch return null;
     const full_path = extractPath(url_str);
     // Strip query string
@@ -110,7 +111,7 @@ pub fn serve(request: *Request, env: *Env, comptime routes: []const Route) ?Resp
         params.reset();
         const method_ok = if (route.method) |rm| rm == method else true;
         if (method_ok and matchPath(route.pattern, path, &params)) {
-            const result = route.handler(request, env, &params);
+            const result = route.handler(request, env, ctx, &params);
             if (result) |resp| {
                 return resp;
             } else |_| {

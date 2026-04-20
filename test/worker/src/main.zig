@@ -218,7 +218,7 @@ pub const MyWorkflow = struct {
 // ---------------------------------------------------------------------------
 // Main worker fetch handler
 // ---------------------------------------------------------------------------
-pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
+pub fn fetch(request: *workers.Request, env: *workers.Env, ctx: *workers.Context) !workers.Response {
     const url_str = try request.url();
     const method = request.method();
 
@@ -377,7 +377,7 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
 
     // -- Router tests -------------------------------------------------------
     if (std.mem.startsWith(u8, path, "/router")) {
-        return handleRouter(request, env);
+        return handleRouter(request, env, ctx);
     }
 
     return workers.Response.err(.not_found,"Not Found");
@@ -1990,16 +1990,16 @@ const router = workers.Router;
 
 fn withRequestId(comptime handler: router.Handler) router.Handler {
     return struct {
-        fn wrapped(req: *workers.Request, env: *workers.Env, params: *router.Params) !workers.Response {
-            var resp = try handler(req, env, params);
+        fn wrapped(req: *workers.Request, env: *workers.Env, ctx: *workers.Context, params: *router.Params) !workers.Response {
+            var resp = try handler(req, env, ctx, params);
             resp.setHeader("x-request-id", "test-123");
             return resp;
         }
     }.wrapped;
 }
 
-fn handleRouter(request: *workers.Request, env: *workers.Env) !workers.Response {
-    return router.serve(request, env, &.{
+fn handleRouter(request: *workers.Request, env: *workers.Env, ctx: *workers.Context) !workers.Response {
+    return router.serve(request, env, ctx, &.{
         router.get("/router/get", handleRouterGet),
         router.post("/router/post", handleRouterPost),
         router.put("/router/put", handleRouterPut),
@@ -2013,49 +2013,49 @@ fn handleRouter(request: *workers.Request, env: *workers.Env) !workers.Response 
     }) orelse workers.Response.err(.not_found, "no matching router route");
 }
 
-fn handleRouterGet(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterGet(_: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     return workers.Response.ok("method=GET");
 }
 
-fn handleRouterPost(req: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterPost(req: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     const body = (try req.body()) orelse "";
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "method=POST body={s}", .{body}) catch "error";
     return workers.Response.ok(msg);
 }
 
-fn handleRouterPut(req: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterPut(req: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     const body = (try req.body()) orelse "";
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "method=PUT body={s}", .{body}) catch "error";
     return workers.Response.ok(msg);
 }
 
-fn handleRouterDelete(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterDelete(_: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     return workers.Response.ok("method=DELETE");
 }
 
-fn handleRouterPatch(req: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterPatch(req: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     const body = (try req.body()) orelse "";
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "method=PATCH body={s}", .{body}) catch "error";
     return workers.Response.ok(msg);
 }
 
-fn handleRouterHead(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterHead(_: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     var resp = workers.Response.ok("");
     resp.setHeader("x-head-test", "yes");
     return resp;
 }
 
-fn handleRouterAny(req: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterAny(req: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     const method = req.method();
     var buf: [64]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "method={s}", .{@tagName(method)}) catch "error";
     return workers.Response.ok(msg);
 }
 
-fn handleRouterParams(_: *workers.Request, _: *workers.Env, params: *router.Params) !workers.Response {
+fn handleRouterParams(_: *workers.Request, _: *workers.Env, _: *workers.Context, params: *router.Params) !workers.Response {
     const name = params.get("name") orelse "?";
     const action = params.get("action") orelse "?";
     var buf: [256]u8 = undefined;
@@ -2063,11 +2063,11 @@ fn handleRouterParams(_: *workers.Request, _: *workers.Env, params: *router.Para
     return workers.Response.ok(msg);
 }
 
-fn handleRouterWildcard(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterWildcard(_: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     return workers.Response.ok("wildcard-matched");
 }
 
-fn handleRouterMiddleware(_: *workers.Request, _: *workers.Env, _: *router.Params) !workers.Response {
+fn handleRouterMiddleware(_: *workers.Request, _: *workers.Env, _: *workers.Context, _: *router.Params) !workers.Response {
     return workers.Response.ok("middleware-ok");
 }
 
@@ -2152,19 +2152,17 @@ fn handleArtifacts(_: *workers.Request, env: *workers.Env, path: []const u8) !wo
 
     if (std.mem.eql(u8, path, "/artifacts/import")) {
         // Import a public GitHub repo via the REST API.
-        // Requires CLOUDFLARE_API_TOKEN env var.
-        const api_token = (try env.get("CLOUDFLARE_API_TOKEN")) orelse {
-            return workers.Response.ok("import-no-token");
-        };
-        const resp_json = arts.importRepo("workers-zig-import", api_token, .{
+        const result = arts.import(.{
             .url = "https://github.com/nilslice/workers-zig",
             .branch = "main",
             .depth = 1,
+        }, .{
+            .name = "workers-zig-import",
         }) catch {
             return workers.Response.ok("import-error");
         };
-        // Verify the response contains "remote" (a successful import)
-        if (std.mem.indexOf(u8, resp_json, "remote") != null) {
+        // Verify the response contains a remote URL (a successful import)
+        if (result.remote.len > 0) {
             // Also verify the repo is accessible via the binding
             if (arts.get("workers-zig-import") catch null) |repo| {
                 const info_json = repo.info() catch {
@@ -2178,10 +2176,6 @@ fn handleArtifacts(_: *workers.Request, env: *workers.Env, path: []const u8) !wo
                 return workers.Response.ok("import-ok-no-name");
             }
             return workers.Response.ok("import-ok-not-found");
-        }
-        // Check if it's an error response
-        if (std.mem.indexOf(u8, resp_json, "error") != null) {
-            return workers.Response.ok("import-api-error");
         }
         return workers.Response.ok("import-unexpected");
     }

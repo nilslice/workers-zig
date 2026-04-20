@@ -10,7 +10,7 @@ const Fetch = @import("Fetch.zig");
 /// hood).  Retrieve results from the returned `Future` handles.
 ///
 /// ```zig
-/// var group = workers.Async.init(allocator);
+/// var group = Async.init(allocator);
 /// defer group.deinit();
 ///
 /// const a = group.kvGetText(kv, "key-1");

@@ -17,10 +17,10 @@ const js = @import("js.zig");
 //    `state: Workflow.State` and a `run` method.
 //    ```zig
 //    pub const MyWorkflow = struct {
-//        state: workers.Workflow.State,
-//        env: workers.Env,
+//        state: Workflow.State,
+//        env: Env,
 //
-//        pub fn run(self: *MyWorkflow, event: *workers.Workflow.Event, step: *workers.Workflow.Step) !void {
+//        pub fn run(self: *MyWorkflow, event: *Workflow.Event, step: *Workflow.Step) !void {
 //            const result = try step.do("fetch", .{}, struct {
 //                fn run() []const u8 {
 //                    // Only runs on first execution — skipped on replay.

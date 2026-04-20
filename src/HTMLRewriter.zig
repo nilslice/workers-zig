@@ -91,7 +91,7 @@ pub fn docEnd(self: *HTMLRewriter, content: Content) !void {
 /// The original response handle is consumed.
 ///
 /// ```zig
-/// var rw = workers.HTMLRewriter.init(allocator);
+/// var rw = HTMLRewriter.init(allocator);
 /// try rw.setAttribute("a[href^='http']", "target", "_blank");
 /// try rw.remove("script.tracking");
 /// try rw.append("body", .{ .content = "<footer>Powered by Zig</footer>", .html = true });

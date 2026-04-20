@@ -34,7 +34,7 @@ pub fn open(name: []const u8) Cache {
 /// there is no match.  JSPI-suspending.
 ///
 /// ```zig
-/// const cache = workers.Cache.default();
+/// const cache = Cache.default();
 /// if (cache.match(.{ .request = request })) |resp| {
 ///     return resp;  // serve from cache
 /// }
@@ -51,7 +51,7 @@ pub fn match(self: *const Cache, key: Key) ?Response {
 /// Store a Response in the cache.  JSPI-suspending.
 ///
 /// ```zig
-/// var resp = workers.Response.ok("data");
+/// var resp = Response.ok("data");
 /// resp.setHeader("cache-control", "max-age=3600");
 /// cache.put(.{ .request = request }, &resp);
 /// ```

@@ -8,7 +8,7 @@ const js = @import("js.zig");
 // worker module to handle incoming emails.
 //
 // ```zig
-// pub fn email(message: *workers.EmailMessage, env: *workers.Env, _: *workers.Context) !void {
+// pub fn email(message: *EmailMessage, env: *Env, _: *Context) !void {
 //     const from = try message.from();
 //     const to = try message.to();
 //     workers.log("email from={s} to={s} size={d}", .{ from, to, message.rawSize() });

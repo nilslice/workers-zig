@@ -18,7 +18,7 @@ pub const Algorithm = enum(u32) {
 /// JSPI-suspending.
 ///
 /// ```zig
-/// const hash = try workers.Crypto.digest(allocator, .sha256, "hello world");
+/// const hash = try Crypto.digest(allocator, .sha256, "hello world");
 /// ```
 pub fn digest(allocator: std.mem.Allocator, algorithm: Algorithm, data: []const u8) ![]const u8 {
     const h = js.crypto_digest(@intFromEnum(algorithm), data.ptr, @intCast(data.len));
@@ -29,7 +29,7 @@ pub fn digest(allocator: std.mem.Allocator, algorithm: Algorithm, data: []const 
 /// JSPI-suspending.
 ///
 /// ```zig
-/// const sig = try workers.Crypto.hmac(allocator, .sha256, "secret-key", "message");
+/// const sig = try Crypto.hmac(allocator, .sha256, "secret-key", "message");
 /// ```
 pub fn hmac(allocator: std.mem.Allocator, algorithm: Algorithm, key: []const u8, data: []const u8) ![]const u8 {
     const h = js.crypto_hmac(

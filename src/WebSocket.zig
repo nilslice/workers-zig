@@ -9,7 +9,7 @@ const Response = @import("Response.zig");
 /// ## Server-side (accepting incoming connections)
 ///
 /// ```zig
-/// var ws = workers.WebSocket.init(allocator);
+/// var ws = WebSocket.init(allocator);
 /// ws.accept();
 ///
 /// ws.sendText("hello");
@@ -29,7 +29,7 @@ const Response = @import("Response.zig");
 /// ## Client-side (connecting to an external WebSocket server)
 ///
 /// ```zig
-/// var ws = try workers.WebSocket.connect(allocator, "wss://echo.example.com");
+/// var ws = try WebSocket.connect(allocator, "wss://echo.example.com");
 ///
 /// ws.sendText("ping");
 ///
@@ -111,7 +111,7 @@ pub fn init(allocator: std.mem.Allocator) WebSocket {
 /// JSPI-suspending.
 ///
 /// ```zig
-/// var ws = try workers.WebSocket.connect(allocator, "wss://echo.example.com");
+/// var ws = try WebSocket.connect(allocator, "wss://echo.example.com");
 /// ws.sendText("hello");
 /// ```
 pub fn connect(allocator: std.mem.Allocator, url: []const u8) !WebSocket {

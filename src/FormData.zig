@@ -31,7 +31,7 @@ pub const File = struct {
 /// JSPI-suspending (reads the request body).
 ///
 /// ```zig
-/// var form = try workers.FormData.fromRequest(allocator, request.handle);
+/// var form = try FormData.fromRequest(allocator, request.handle);
 /// const name = try form.get("username");
 /// ```
 pub fn fromRequest(allocator: std.mem.Allocator, request_handle: js.Handle) FormData {

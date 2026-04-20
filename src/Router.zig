@@ -11,43 +11,43 @@ const Context = @import("Context.zig");
 //
 // **Main fetch handler:**
 // ```zig
-// const router = workers.Router;
+// const Router = workers.Router;
 //
-// pub fn fetch(request: *workers.Request, env: *workers.Env, ctx: *workers.Context) !workers.Response {
-//     return router.serve(request, env, ctx, &.{
-//         router.get("/", handleIndex),
-//         router.get("/users/:id", handleGetUser),
-//         router.post("/users", handleCreateUser),
-//         router.get("/posts/:pid/comments/:cid", handleComment),
-//     }) orelse workers.Response.err(.not_found, "Not Found");
+// pub fn fetch(request: *Request, env: *Env, ctx: *Context) !Response {
+//     return Router.serve(request, env, ctx, &.{
+//         Router.get("/", handleIndex),
+//         Router.get("/users/:id", handleGetUser),
+//         Router.post("/users", handleCreateUser),
+//         Router.get("/posts/:pid/comments/:cid", handleComment),
+//     }) orelse Response.err(.not_found, "Not Found");
 // }
 //
-// fn handleGetUser(req: *workers.Request, env: *workers.Env, ctx: *workers.Context, params: *router.Params) !workers.Response {
+// fn handleGetUser(req: *Request, env: *Env, ctx: *Context, params: *Router.Params) !Response {
 //     const id = params.get("id").?;
-//     return workers.Response.ok(id);
+//     return Response.ok(id);
 // }
 // ```
 //
 // **Durable Object fetch (low-level):**
 // ```zig
-// pub fn fetch(self: *MyDO, request: *workers.Request) !workers.Response {
-//     const path = router.extractPath(try request.url());
-//     var params: router.Params = .{};
+// pub fn fetch(self: *MyDO, request: *Request) !Response {
+//     const path = Router.extractPath(try request.url());
+//     var params: Router.Params = .{};
 //
-//     if (router.matchPath("/items/:id", path, &params))
+//     if (Router.matchPath("/items/:id", path, &params))
 //         return self.getItem(params.get("id").?);
 //
-//     return workers.Response.err(.not_found, "Not Found");
+//     return Response.err(.not_found, "Not Found");
 // }
 // ```
 //
 // **Middleware (comptime wrapper):**
 // ```zig
-// fn withAuth(comptime handler: router.Handler) router.Handler {
+// fn withAuth(comptime handler: Router.Handler) Router.Handler {
 //     return struct {
-//         fn wrapped(req: *workers.Request, env: *workers.Env, ctx: *workers.Context, params: *router.Params) !workers.Response {
+//         fn wrapped(req: *Request, env: *Env, ctx: *Context, params: *Router.Params) !Response {
 //             const token = try req.header("Authorization") orelse
-//                 return workers.Response.err(.unauthorized, "missing token");
+//                 return Response.err(.unauthorized, "missing token");
 //             _ = token;
 //             return handler(req, env, ctx, params);
 //         }
@@ -55,7 +55,7 @@ const Context = @import("Context.zig");
 // }
 //
 // // Usage:
-// router.get("/admin/:id", withAuth(handleAdmin)),
+// Router.get("/admin/:id", withAuth(handleAdmin)),
 // ```
 // ===========================================================================
 

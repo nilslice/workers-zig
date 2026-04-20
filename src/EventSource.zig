@@ -30,7 +30,7 @@ pub const ReadyState = enum(u32) {
 /// Connect to an SSE endpoint.
 ///
 /// ```zig
-/// var es = workers.EventSource.connect(allocator, "https://api.example.com/stream");
+/// var es = EventSource.connect(allocator, "https://api.example.com/stream");
 /// defer es.close();
 ///
 /// while (try es.next()) |event| {

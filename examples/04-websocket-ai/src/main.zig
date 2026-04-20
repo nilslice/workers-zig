@@ -1,13 +1,20 @@
 const std = @import("std");
 const workers = @import("workers-zig");
+const Request = workers.Request;
+const Response = workers.Response;
+const Env = workers.Env;
+const Context = workers.Context;
+const Router = workers.Router;
+const WebSocket = workers.WebSocket;
+const StreamingResponse = workers.StreamingResponse;
 
 /// WebSocket chat + AI text generation example — bare path matching.
-pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) !workers.Response {
+pub fn fetch(request: *Request, env: *Env, _: *Context) !Response {
     const url = try request.url();
-    const path = workers.Router.extractPath(url);
+    const path = Router.extractPath(url);
 
     if (std.mem.eql(u8, path, "/")) {
-        return workers.Response.html(
+        return Response.html(
             \\<html><body>
             \\<h2>workers-zig: WebSocket + AI</h2>
             \\<p>Connect via WebSocket to <code>/ws</code> for echo.</p>
@@ -19,7 +26,7 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
     // -- WebSocket echo -------------------------------------------------
     if (std.mem.eql(u8, path, "/ws")) {
         const alloc = std.heap.wasm_allocator;
-        var ws = workers.WebSocket.init(alloc);
+        var ws = WebSocket.init(alloc);
         ws.accept();
         ws.sendText("connected");
 
@@ -45,7 +52,7 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
     // -- AI text generation ---------------------------------------------
     if (std.mem.eql(u8, path, "/ai/ask")) {
         // Extract query from ?q=...
-        const full_path = workers.Router.extractPath(url);
+        const full_path = Router.extractPath(url);
         const query = if (std.mem.indexOf(u8, full_path, "?q=")) |qi|
             full_path[qi + 3 ..]
         else
@@ -58,15 +65,15 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
         });
 
         if (result.response) |text| {
-            return workers.Response.ok(text);
+            return Response.ok(text);
         }
-        return workers.Response.err(.internal_server_error, "AI returned no response");
+        return Response.err(.internal_server_error, "AI returned no response");
     }
 
     // -- AI streaming ---------------------------------------------------
     if (std.mem.eql(u8, path, "/ai/stream")) {
         const ai = try env.ai("AI");
-        var stream = workers.StreamingResponse.start(.{});
+        var stream = StreamingResponse.start(.{});
         stream.setHeader("content-type", "text/event-stream");
 
         var reader = try ai.textGenerationStream("@cf/meta/llama-3.1-8b-instruct", .{
@@ -80,5 +87,5 @@ pub fn fetch(request: *workers.Request, env: *workers.Env, _: *workers.Context) 
         return stream.response();
     }
 
-    return workers.Response.err(.not_found, "not found");
+    return Response.err(.not_found, "not found");
 }

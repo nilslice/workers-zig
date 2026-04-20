@@ -93,7 +93,7 @@ fn writeContentType(writer: *std.Io.Writer, ct: ContentType) !void {
 /// A batch of messages delivered to a queue consumer handler.
 ///
 /// ```zig
-/// pub fn queue(batch: *workers.Queue.MessageBatch, env: *workers.Env, _: *workers.Context) !void {
+/// pub fn queue(batch: *Queue.MessageBatch, env: *Env, _: *Context) !void {
 ///     workers.log("queue={s} count={d}", .{ batch.queueName(), batch.len() });
 ///     var iter = batch.iterator();
 ///     while (iter.next()) |msg| {

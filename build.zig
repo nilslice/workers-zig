@@ -1,5 +1,15 @@
 const std = @import("std");
 
+/// Derive the library version from build.zig.zon so it never goes stale.
+const workers_zig_version = blk: {
+    const zon = @embedFile("build.zig.zon");
+    const key = ".version = \"";
+    const start = std.mem.indexOf(u8, zon, key) orelse break :blk "unknown";
+    const after = start + key.len;
+    const end = std.mem.indexOfScalarPos(u8, zon, after, '"') orelse break :blk "unknown";
+    break :blk zon[after..end];
+};
+
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
@@ -39,9 +49,14 @@ pub fn build(b: *std.Build) void {
     exe.entry = .disabled;
     exe.rdynamic = true;
 
-    b.installArtifact(exe);
-
-    // Run gen_entry on the compiled wasm to generate entry.js.
+    // Re-usable build tools (compiled once, used by root worker + all examples).
+    const inject_exe = b.addExecutable(.{
+        .name = "inject_producers",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/inject_producers.zig"),
+            .target = b.graph.host,
+        }),
+    });
     const gen_entry_exe = b.addExecutable(.{
         .name = "gen_entry",
         .root_module = b.createModule(.{
@@ -49,10 +64,10 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
         }),
     });
-    const gen_entry_run = b.addRunArtifact(gen_entry_exe);
-    gen_entry_run.addArtifactArg(exe);
-    const entry_js = gen_entry_run.addOutputFileArg("entry.js");
-    b.getInstallStep().dependOn(&b.addInstallBinFile(entry_js, "entry.js").step);
+
+    const artifacts = setupWorkerPostProcess(b, inject_exe, gen_entry_exe, exe);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(artifacts.wasm, "worker.wasm").step);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(artifacts.entry_js, "entry.js").step);
     b.getInstallStep().dependOn(&b.addInstallBinFile(b.path("js/shim.js"), "shim.js").step);
 
     // -------------------------------------------------------------------
@@ -94,14 +109,9 @@ pub fn build(b: *std.Build) void {
         ex_exe.entry = .disabled;
         ex_exe.rdynamic = true;
 
-        const ex_gen_run = b.addRunArtifact(gen_entry_exe);
-        ex_gen_run.addArtifactArg(ex_exe);
-        const ex_entry_js = ex_gen_run.addOutputFileArg("entry.js");
-
-        const ex_install = b.addInstallArtifact(ex_exe, .{
-            .dest_sub_path = "examples/" ++ dir ++ "/worker.wasm",
-        });
-        const ex_install_entry = b.addInstallBinFile(ex_entry_js, "examples/" ++ dir ++ "/entry.js");
+        const ex_artifacts = setupWorkerPostProcess(b, inject_exe, gen_entry_exe, ex_exe);
+        const ex_install = b.addInstallBinFile(ex_artifacts.wasm, "examples/" ++ dir ++ "/worker.wasm");
+        const ex_install_entry = b.addInstallBinFile(ex_artifacts.entry_js, "examples/" ++ dir ++ "/entry.js");
         const ex_install_shim = b.addInstallBinFile(b.path("js/shim.js"), "examples/" ++ dir ++ "/shim.js");
 
         const ex_step = b.step("example-" ++ name, "Build the " ++ dir ++ " example");
@@ -203,9 +213,15 @@ pub fn addWorker(
     exe.entry = .disabled;
     exe.rdynamic = true;
 
-    // Build the gen_entry tool for the host target, then run it on the
-    // compiled wasm binary to find DO classes (via `do_<Name>_fetch` exports)
-    // and generate entry.js.
+    // Tools live inside the downstream build graph (they are created per call
+    // to addWorker because each project has its own b.* namespace).
+    const inject_exe = b.addExecutable(.{
+        .name = "inject_producers",
+        .root_module = b.createModule(.{
+            .root_source_file = workers_dep.path("src/inject_producers.zig"),
+            .target = b.graph.host,
+        }),
+    });
     const gen_entry_exe = b.addExecutable(.{
         .name = "gen_entry",
         .root_module = b.createModule(.{
@@ -214,13 +230,33 @@ pub fn addWorker(
         }),
     });
 
-    const gen_entry_run = b.addRunArtifact(gen_entry_exe);
-    gen_entry_run.addArtifactArg(exe); // input: the compiled wasm binary
-    const entry_js = gen_entry_run.addOutputFileArg("entry.js"); // output: generated entry.js
-
-    // Install entry.js and shim.js to zig-out/bin/
-    b.getInstallStep().dependOn(&b.addInstallBinFile(entry_js, "entry.js").step);
+    const artifacts = setupWorkerPostProcess(b, inject_exe, gen_entry_exe, exe);
+    const wasm_name = std.mem.concat(b.allocator, u8, &.{ options.name, ".wasm" }) catch @panic("OOM");
+    b.getInstallStep().dependOn(&b.addInstallBinFile(artifacts.wasm, wasm_name).step);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(artifacts.entry_js, "entry.js").step);
     b.getInstallStep().dependOn(&b.addInstallBinFile(workers_dep.path("js/shim.js"), "shim.js").step);
 
     return exe;
+}
+
+/// Shared post-processing: run inject_producers and gen_entry on a compiled wasm
+/// executable. Returns the post-processed wasm and generated entry.js.
+fn setupWorkerPostProcess(
+    b: *std.Build,
+    inject_exe: *std.Build.Step.Compile,
+    gen_entry_exe: *std.Build.Step.Compile,
+    exe: *std.Build.Step.Compile,
+) struct { wasm: std.Build.LazyPath, entry_js: std.Build.LazyPath } {
+    const inject_run = b.addRunArtifact(inject_exe);
+    inject_run.addArtifactArg(exe);
+    const wasm = inject_run.addOutputFileArg("worker.wasm");
+    inject_run.addArg("sdk");
+    inject_run.addArg("workers-zig");
+    inject_run.addArg(workers_zig_version);
+
+    const gen_entry_run = b.addRunArtifact(gen_entry_exe);
+    gen_entry_run.addArtifactArg(exe);
+    const entry_js = gen_entry_run.addOutputFileArg("entry.js");
+
+    return .{ .wasm = wasm, .entry_js = entry_js };
 }

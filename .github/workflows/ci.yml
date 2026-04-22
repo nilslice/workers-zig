@@ -19,5 +19,18 @@ jobs:
       - name: Run tests
         run: zig build test
 
+      - name: Build root worker
+        run: zig build
+
       - name: Build examples
         run: zig build examples
+
+      - name: Verify producers section in root worker
+        run: zig run src/verify_producers.zig -- zig-out/bin/worker.wasm
+
+      - name: Verify producers section in example workers
+        run: |
+          for wasm in zig-out/bin/examples/*/worker.wasm; do
+            echo "Checking $wasm"
+            zig run src/verify_producers.zig -- "$wasm"
+          done

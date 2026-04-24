@@ -1,6 +1,7 @@
 name = "zig-worker-test"
 main = "zig-out/bin/entry.js"
-compatibility_date = "2025-04-01"
+compatibility_date = "2025-09-15"
+compatibility_flags = ["nodejs_compat"]
 
 [build]
 command = ""

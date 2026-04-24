@@ -11,7 +11,8 @@ Built on [JSPI](https://v8.dev/blog/jspi) (JavaScript Promise Integration), `wor
 - **Durable Objects** — define classes as Zig structs, auto-detected at build time
 - **Workflows** — define steps with `step.do()`, `step.sleep()`, `step.waitForEvent()`
 - **WebSockets** — server-side accept, send, receive loop
-- **TCP Sockets** — outbound TCP connections with TLS and StartTLS
+- **TCP Sockets** — outbound TCP connections with TLS, StartTLS, mTLS, and custom CA / SNI
+- **Zig stdlib on WASI** — `std.fs` read/write to `/tmp`, `std.process.Environ` reads worker vars, `std.time`, `std.crypto.random`
 - **Streaming responses** — chunked transfer via `StreamingResponse`
 - **Workers AI** — text generation, embeddings, image models, speech, streaming
 - **Email** — incoming email routing and outbound email sending
@@ -420,11 +421,22 @@ return ws.response();
 ### TCP Sockets
 
 ```zig
+// Plaintext or simple TLS via cloudflare:sockets
 var socket = try workers.Socket.connect(allocator, "example.com", 80, .{});
 socket.write("GET / HTTP/1.0\r\n\r\n");
 const data = try socket.read();
 socket.close();
+
+// Extended TLS via node:tls — custom CA, SNI override, or mTLS
+var tls = try workers.Socket.connectTls(allocator, "api.example.com", 443, .{
+    .servername = "api.example.com",
+    .cert = try env.get("CLIENT_CERT"),
+    .key  = try env.get("CLIENT_KEY"),
+});
+defer tls.close();
 ```
+
+`connectTls` requires `compatibility_flags = ["nodejs_compat"]` in your `wrangler.toml`.
 
 ### Queues
 

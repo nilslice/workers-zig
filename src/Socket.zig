@@ -27,6 +27,23 @@ pub const ConnectOptions = struct {
     allow_half_open: bool = false,
 };
 
+/// Extended TLS options, backed by node:tls. Use with `connectTls` when you
+/// need client certificates, a custom CA bundle, or a non-default SNI name.
+/// Client-cert fields accept PEM strings, typically sourced from a Workers
+/// secret binding.
+pub const TlsOptions = struct {
+    /// SNI server name. Defaults to the hostname if null.
+    servername: ?[]const u8 = null,
+    /// PEM-encoded trusted CA bundle.
+    ca: ?[]const u8 = null,
+    /// PEM-encoded client certificate (for mTLS).
+    cert: ?[]const u8 = null,
+    /// PEM-encoded client private key (for mTLS).
+    key: ?[]const u8 = null,
+    /// When false, the peer certificate chain is not validated. Default true.
+    rejectUnauthorized: bool = true,
+};
+
 /// Information about the socket connection endpoints.
 pub const SocketInfo = struct {
     remoteAddress: ?[]const u8 = null,
@@ -51,6 +68,33 @@ pub fn connect(allocator: std.mem.Allocator, hostname: []const u8, port: u16, op
         port,
         @intFromEnum(options.secure_transport),
         if (options.allow_half_open) @as(u32, 1) else 0,
+    );
+    return .{ .handle = h, .allocator = allocator };
+}
+
+/// Create a TLS connection via node:tls with fine-grained TLS configuration
+/// (client certs, custom CA, SNI override). The socket is usable the same way
+/// as one returned by `connect()`.
+///
+/// ```zig
+/// const socket = try Socket.connectTls(allocator, "api.example.com", 443, .{
+///     .servername = "api.example.com",
+///     .cert = env.get(alloc, "CLIENT_CERT"),
+///     .key  = env.get(alloc, "CLIENT_KEY"),
+/// });
+/// defer socket.close();
+/// ```
+pub fn connectTls(allocator: std.mem.Allocator, hostname: []const u8, port: u16, options: TlsOptions) !Socket {
+    var w = std.Io.Writer.Allocating.init(allocator);
+    defer w.deinit();
+    std.json.fmt(options, .{ .emit_null_optional_fields = false }).format(&w.writer) catch return error.JsonSerializationFailed;
+    const json = w.written();
+    const h = js.socket_connect_tls(
+        hostname.ptr,
+        @intCast(hostname.len),
+        port,
+        json.ptr,
+        @intCast(json.len),
     );
     return .{ .handle = h, .allocator = allocator };
 }

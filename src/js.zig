@@ -345,6 +345,7 @@ pub extern "env" fn html_rewriter_transform(resp: Handle, rules_ptr: [*]const u8
 
 // -- TCP Sockets -------------------------------------------------------------
 pub extern "env" fn socket_connect(host_ptr: [*]const u8, host_len: u32, port: u16, secure_transport: u32, allow_half_open: u32) Handle;
+pub extern "env" fn socket_connect_tls(host_ptr: [*]const u8, host_len: u32, port: u16, opts_json_ptr: [*]const u8, opts_json_len: u32) Handle;
 pub extern "env" fn socket_get_writer(socket: Handle) Handle;
 pub extern "env" fn socket_get_reader(socket: Handle) Handle;
 pub extern "env" fn socket_write(writer: Handle, ptr: [*]const u8, len: u32) void; // JSPI-suspending

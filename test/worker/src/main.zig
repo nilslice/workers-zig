@@ -295,6 +295,21 @@ pub fn fetch(request: *Request, env: *Env, ctx: *Context) !Response {
         return handleStdlib(request, env, path);
     }
 
+    // -- Filesystem (WASI -> node:fs VFS) -------------------------------------
+    if (std.mem.startsWith(u8, path, "/fs")) {
+        return handleFs(path);
+    }
+
+    // -- WASI environ (backed by process.env) ---------------------------------
+    if (std.mem.startsWith(u8, path, "/env-wasi")) {
+        return handleEnvWasi(env, path);
+    }
+
+    // -- node:tls-backed TCP socket -------------------------------------------
+    if (std.mem.startsWith(u8, path, "/tls")) {
+        return handleTls(env, path);
+    }
+
     // -- KV tests -----------------------------------------------------------
     if (std.mem.startsWith(u8, path, "/kv")) {
         return handleKv(request, env, path);
@@ -1041,7 +1056,7 @@ fn handleDO(_: *Request, env: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 fn handleWebSocket(request: *Request, _: *Env, path: []const u8) !Response {
     _ = request;
-    const alloc = std.heap.wasm_allocator;
+    const alloc = workers.allocator;
 
     // -- Echo: echoes text and binary messages back to the client -------------
     if (std.mem.eql(u8, path, "/ws/echo")) {
@@ -1325,6 +1340,189 @@ fn handleStdlib(_: *Request, _: *Env, path: []const u8) !Response {
     }
 
     return Response.err(.not_found, "unknown stdlib route");
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem tests — verify WASI path_open/fd_read/fd_write round-trip
+// through the shim's node:fs bridge against Cloudflare's virtual FS.
+// ---------------------------------------------------------------------------
+fn handleFs(path: []const u8) !Response {
+    const io = workers.io();
+    const Dir = std.Io.Dir;
+
+    // -- /tmp round-trip: write then read, expected to succeed ----------------
+    if (std.mem.eql(u8, path, "/fs/tmp-roundtrip")) {
+        const payload = "hello from zig wasi via node:fs";
+        Dir.cwd().writeFile(io, .{
+            .sub_path = "/tmp/houston-spike.txt",
+            .data = payload,
+        }) catch |err| {
+            return fsErrResponse("write", err);
+        };
+
+        var buf: [256]u8 = undefined;
+        const bytes = Dir.cwd().readFile(io, "/tmp/houston-spike.txt", &buf) catch |err| {
+            return fsErrResponse("read", err);
+        };
+        return Response.ok(bytes);
+    }
+
+    // -- /tmp mkdir + nested file + readdir -----------------------------------
+    if (std.mem.eql(u8, path, "/fs/tmp-mkdir-list")) {
+        Dir.cwd().createDirPath(io, "/tmp/houston-spike-dir") catch |err| {
+            return fsErrResponse("mkdir", err);
+        };
+        Dir.cwd().writeFile(io, .{
+            .sub_path = "/tmp/houston-spike-dir/nested.txt",
+            .data = "nested-ok",
+        }) catch |err| {
+            return fsErrResponse("write-nested", err);
+        };
+        var buf: [256]u8 = undefined;
+        const bytes = Dir.cwd().readFile(io, "/tmp/houston-spike-dir/nested.txt", &buf) catch |err| {
+            return fsErrResponse("read-nested", err);
+        };
+        return Response.ok(bytes);
+    }
+
+    // -- Write to root (/), a non-/tmp path. Cloudflare's VFS is read-only
+    //    outside /tmp, so we expect a clean error, not a crash. --------------
+    if (std.mem.eql(u8, path, "/fs/root-write")) {
+        Dir.cwd().writeFile(io, .{
+            .sub_path = "/houston-spike-root.txt",
+            .data = "should-fail",
+        }) catch |err| {
+            return fsErrResponse("root-write", err);
+        };
+        return Response.ok("unexpected-success");
+    }
+
+    // -- Write to a new top-level dir (also outside /tmp, /bundle, /dev) -----
+    if (std.mem.eql(u8, path, "/fs/custom-dir-write")) {
+        Dir.cwd().createDirPath(io, "/data") catch |err| {
+            // Report the mkdir error — we don't get to writing.
+            return fsErrResponse("custom-mkdir", err);
+        };
+        Dir.cwd().writeFile(io, .{
+            .sub_path = "/data/houston-spike.txt",
+            .data = "should-fail",
+        }) catch |err| {
+            return fsErrResponse("custom-write", err);
+        };
+        return Response.ok("unexpected-success");
+    }
+
+    // -- Relative path — resolves against cwd. On WASI cwd == first preopen,
+    //    which our shim exposes as "/". So "relative.txt" becomes "/relative.txt"
+    //    — also outside the writable area. ------------------------------------
+    if (std.mem.eql(u8, path, "/fs/relative-write")) {
+        Dir.cwd().writeFile(io, .{
+            .sub_path = "relative.txt",
+            .data = "should-fail",
+        }) catch |err| {
+            return fsErrResponse("relative-write", err);
+        };
+        return Response.ok("unexpected-success");
+    }
+
+    // -- Stat /bundle (read-only bundled modules) to confirm reads work ------
+    if (std.mem.eql(u8, path, "/fs/bundle-stat")) {
+        const stat = Dir.cwd().statFile(io, "/bundle", .{}) catch |err| {
+            return fsErrResponse("bundle-stat", err);
+        };
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "kind={s} size={d}", .{
+            @tagName(stat.kind),
+            stat.size,
+        }) catch "format-error";
+        return Response.ok(msg);
+    }
+
+    return Response.err(.not_found, "unknown fs route");
+}
+
+fn fsErrResponse(comptime op: []const u8, err: anyerror) Response {
+    var buf: [128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, op ++ "-failed: {s}", .{@errorName(err)}) catch op ++ "-failed";
+    return Response.ok(msg);
+}
+
+// ---------------------------------------------------------------------------
+// WASI environ tests — exercise std.posix.getenv through the shim-backed
+// environ_get/environ_sizes_get syscalls (which route to process.env).
+// ---------------------------------------------------------------------------
+fn handleEnvWasi(env: *Env, path: []const u8) !Response {
+    const alloc = env.allocator;
+    const wasi_env: std.process.Environ = .{ .block = .global };
+
+    if (std.mem.eql(u8, path, "/env-wasi/getenv")) {
+        const val = wasi_env.getAlloc(alloc, "GREETING") catch |err| switch (err) {
+            error.EnvironmentVariableMissing => return Response.ok("<missing>"),
+            else => return err,
+        };
+        defer alloc.free(val);
+        return Response.ok(val);
+    }
+    if (std.mem.eql(u8, path, "/env-wasi/missing")) {
+        const val = wasi_env.getAlloc(alloc, "NO_SUCH_VAR") catch |err| switch (err) {
+            error.EnvironmentVariableMissing => return Response.ok("<missing>"),
+            else => return err,
+        };
+        defer alloc.free(val);
+        return Response.ok(val);
+    }
+    if (std.mem.eql(u8, path, "/env-wasi/list")) {
+        var map = try wasi_env.createMap(alloc);
+        defer map.deinit();
+        var w = std.Io.Writer.Allocating.init(alloc);
+        defer w.deinit();
+        var it = map.iterator();
+        while (it.next()) |e| {
+            w.writer.print("{s}={s}\n", .{ e.key_ptr.*, e.value_ptr.* }) catch return error.OutOfMemory;
+        }
+        return Response.ok(w.written());
+    }
+    return Response.err(.not_found, "unknown env-wasi route");
+}
+
+// ---------------------------------------------------------------------------
+// node:tls-backed socket — verify the Socket.connectTls path.  Does an
+// HTTP/1.0 GET over TLS to example.com:443.
+// ---------------------------------------------------------------------------
+fn handleTls(env: *Env, path: []const u8) !Response {
+    const alloc = env.allocator;
+    const Socket = workers.Socket;
+
+    if (std.mem.eql(u8, path, "/tls/get-example")) {
+        var socket = Socket.connectTls(alloc, "example.com", 443, .{
+            .servername = "example.com",
+        }) catch |err| {
+            return tlsErrResponse("connect", err);
+        };
+        defer socket.close();
+
+        socket.write("GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n");
+
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(alloc);
+        while (try socket.read()) |chunk| {
+            try body.appendSlice(alloc, chunk);
+            alloc.free(chunk);
+            if (body.items.len > 8 * 1024) break;
+        }
+
+        const status_line_end = std.mem.indexOfScalar(u8, body.items, '\n') orelse body.items.len;
+        const status_line = std.mem.trimEnd(u8, body.items[0..status_line_end], "\r");
+        return Response.ok(status_line);
+    }
+
+    return Response.err(.not_found, "unknown tls route");
+}
+
+fn tlsErrResponse(comptime op: []const u8, err: anyerror) Response {
+    var buf: [128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, op ++ "-failed: {s}", .{@errorName(err)}) catch op ++ "-failed";
+    return Response.ok(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -1864,8 +2062,8 @@ fn handleTailVerify(_: *Request, env: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // Crypto tests
 // ---------------------------------------------------------------------------
-fn handleCrypto(_: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleCrypto(_: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/crypto/digest-sha256")) {
         const hash = try Crypto.digest(allocator, .sha256, "hello world");
@@ -1919,8 +2117,8 @@ fn handleCrypto(_: *Request, _: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // FormData tests
 // ---------------------------------------------------------------------------
-fn handleFormData(request: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleFormData(request: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/formdata/parse")) {
         var form = FormData.fromRequest(allocator, request.handle);
@@ -1963,8 +2161,8 @@ fn handleFormData(request: *Request, _: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // HTMLRewriter tests
 // ---------------------------------------------------------------------------
-fn handleRewriter(_: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleRewriter(_: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/rewriter/set-attr")) {
         // Create an HTML response, then transform it

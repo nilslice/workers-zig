@@ -11,6 +11,11 @@
 import wasm from "./worker.wasm";
 import { connect as _socketConnect } from "cloudflare:sockets";
 import { DurableObject as _DurableObjectBase, WorkflowEntrypoint as _WorkflowBase } from "cloudflare:workers";
+import * as _nodeFs from "node:fs";
+import * as _nodePath from "node:path";
+import _nodeProcess from "node:process";
+import * as _nodeTls from "node:tls";
+import { Duplex as _NodeDuplex } from "node:stream";
 
 // ---------------------------------------------------------------------------
 // Handle table
@@ -1529,6 +1534,33 @@ const env_imports = {
     const socket = _socketConnect({ hostname, port }, opts);
     return store(socket);
   },
+  // Connect via node:tls, enabling client certs / custom CAs / servername.
+  // `opts_json` is a JSON blob with { servername?, ca?, cert?, key?, rejectUnauthorized? }.
+  // Returns an adapter object that mirrors the cloudflare:sockets.Socket shape
+  // (readable/writable/opened/close) so the existing reader/writer bindings
+  // work unchanged.
+  socket_connect_tls(hp, hl, port, op, ol) {
+    const host = readStr(hp, hl);
+    const raw = ol > 0 ? JSON.parse(readStr(op, ol)) : {};
+    const connectOpts = { host, port, servername: raw.servername ?? host };
+    if (raw.ca != null) connectOpts.ca = raw.ca;
+    if (raw.cert != null) connectOpts.cert = raw.cert;
+    if (raw.key != null) connectOpts.key = raw.key;
+    if (raw.rejectUnauthorized === false) connectOpts.rejectUnauthorized = false;
+    const tlsSocket = _nodeTls.connect(connectOpts);
+    const { readable, writable } = _NodeDuplex.toWeb(tlsSocket);
+    const opened = new Promise((resolve, reject) => {
+      tlsSocket.once("secureConnect", () => resolve({
+        remoteAddress: tlsSocket.remoteAddress ? `${tlsSocket.remoteAddress}:${tlsSocket.remotePort ?? port}` : null,
+        localAddress: tlsSocket.localAddress ? `${tlsSocket.localAddress}:${tlsSocket.localPort ?? 0}` : null,
+      }));
+      tlsSocket.once("error", reject);
+    });
+    return store({
+      readable, writable, opened,
+      close: async () => { tlsSocket.end(); tlsSocket.destroy(); },
+    });
+  },
   socket_get_writer(socketH) {
     return store(get(socketH).writable.getWriter());
   },
@@ -1880,151 +1912,582 @@ const env_imports = {
 // ---------------------------------------------------------------------------
 // WASI shim – wasi_snapshot_preview1
 //
-// Provides the subset of WASI syscalls that Zig's standard library uses on
-// wasm32-wasi: time, randomness, and fd I/O for debug/panic output.
+// Backs Zig's wasm32-wasi syscalls with the Workers runtime: clocks/random via
+// globals, and filesystem operations via Cloudflare's node:fs virtual FS
+// (/bundle read-only, /tmp writable per-request, /dev character devices).
+// Requires the `nodejs_compat` compatibility flag (and a compat date of
+// 2025-09-01+ for node:fs by default; otherwise add `enable_nodejs_fs_module`).
 // ---------------------------------------------------------------------------
-const WASI_SUCCESS = 0;
-const WASI_EBADF = 8;
-const WASI_EINVAL = 28;
-const WASI_ENOSYS = 52;
+
+// Errno constants (wasi-libc errno.h)
+const WASI_SUCCESS      = 0;
+const WASI_EACCES       = 2;
+const WASI_EAGAIN       = 6;
+const WASI_EBADF        = 8;
+const WASI_EEXIST       = 20;
+const WASI_EFAULT       = 21;
+const WASI_EINVAL       = 28;
+const WASI_EIO          = 29;
+const WASI_EISDIR       = 31;
+const WASI_ELOOP        = 32;
+const WASI_EMFILE       = 33;
+const WASI_ENAMETOOLONG = 37;
+const WASI_ENFILE       = 41;
+const WASI_ENOENT       = 44;
+const WASI_ENOMEM       = 48;
+const WASI_ENOSPC       = 51;
+const WASI_ENOSYS       = 52;
+const WASI_ENOTDIR      = 54;
+const WASI_ENOTEMPTY    = 55;
+const WASI_EPERM        = 63;
+const WASI_EROFS        = 69;
+
+// Filetype constants
+const FT_UNKNOWN          = 0;
+const FT_BLOCK_DEVICE     = 1;
+const FT_CHARACTER_DEVICE = 2;
+const FT_DIRECTORY        = 3;
+const FT_REGULAR_FILE     = 4;
+const FT_SOCKET_DGRAM     = 5;
+const FT_SOCKET_STREAM    = 6;
+const FT_SYMBOLIC_LINK    = 7;
+
+// WASI oflags / fdflags / rights bits we care about
+const OFLAG_CREAT     = 1;
+const OFLAG_DIRECTORY = 2;
+const OFLAG_EXCL      = 4;
+const OFLAG_TRUNC     = 8;
+const FDFLAG_APPEND   = 1;
+const RIGHT_FD_READ   = 0x2n;
+const RIGHT_FD_WRITE  = 0x40n;
+
+// WASI fd table.  fd 0/1/2 are stdio (handled specially).  fd 3 is a single
+// preopen rooted at "/" so Zig can resolve any absolute path (/tmp, /bundle,
+// /dev) relative to it via path_open.  fds >=100 are dynamically allocated for
+// files opened through path_open.
+const WASI_PREOPEN_FD = 3;
+const WASI_PREOPEN_PATH = "/";
+let _wasiNextFd = 100;
+const _wasiFds = new Map();  // wasiFd -> entry
+_wasiFds.set(WASI_PREOPEN_FD, { kind: "preopen", path: WASI_PREOPEN_PATH });
+
+const _wasiTextEnc = new TextEncoder();
+function _wasiEnvEntries() {
+  const out = [];
+  const env = _nodeProcess.env || {};
+  for (const k of Object.keys(env)) {
+    const v = env[k];
+    if (v == null) continue;
+    out.push(`${k}=${v}`);
+  }
+  return out;
+}
+function _wasiArgs() {
+  const argv = _nodeProcess.argv;
+  return Array.isArray(argv) && argv.length > 0 ? argv.map(String) : ["worker"];
+}
+
+// Map a Node.js error code to a WASI errno.
+function wasiErrno(err) {
+  switch (err && err.code) {
+    case "ENOENT":       return WASI_ENOENT;
+    case "EEXIST":       return WASI_EEXIST;
+    case "EACCES":       return WASI_EACCES;
+    case "EPERM":        return WASI_EPERM;
+    case "EBADF":        return WASI_EBADF;
+    case "EISDIR":       return WASI_EISDIR;
+    case "ENOTDIR":      return WASI_ENOTDIR;
+    case "ENOTEMPTY":    return WASI_ENOTEMPTY;
+    case "ENAMETOOLONG": return WASI_ENAMETOOLONG;
+    case "ELOOP":        return WASI_ELOOP;
+    case "EMFILE":       return WASI_EMFILE;
+    case "ENFILE":       return WASI_ENFILE;
+    case "EINVAL":       return WASI_EINVAL;
+    case "EROFS":        return WASI_EROFS;
+    case "ENOSPC":       return WASI_ENOSPC;
+    case "EIO":          return WASI_EIO;
+    case "EFAULT":       return WASI_EFAULT;
+    case "ENOMEM":       return WASI_ENOMEM;
+    default:             return WASI_EIO;
+  }
+}
+
+// Filetype from a node stat-like object.
+function statFiletype(st) {
+  if (st.isFile && st.isFile()) return FT_REGULAR_FILE;
+  if (st.isDirectory && st.isDirectory()) return FT_DIRECTORY;
+  if (st.isSymbolicLink && st.isSymbolicLink()) return FT_SYMBOLIC_LINK;
+  if (st.isCharacterDevice && st.isCharacterDevice()) return FT_CHARACTER_DEVICE;
+  if (st.isBlockDevice && st.isBlockDevice()) return FT_BLOCK_DEVICE;
+  return FT_UNKNOWN;
+}
+
+// Resolve a WASI (dirfd, relative path) pair to an absolute VFS path.
+function resolveAt(dirfd, relPath) {
+  const entry = _wasiFds.get(dirfd);
+  if (!entry) return null;
+  const base = entry.kind === "preopen" ? entry.path
+             : entry.kind === "dir"     ? entry.path
+             : null;
+  if (base == null) return null;
+  // Join then normalize — _nodePath.resolve treats a leading "/" in relPath as
+  // absolute which we don't want; strip one leading slash to force join.
+  const rel = relPath.startsWith("/") ? relPath.slice(1) : relPath;
+  return _nodePath.posix.normalize(_nodePath.posix.join(base, rel));
+}
+
+// Translate WASI open flags/rights to node flag integer.
+function wasiOpenFlags(oflags, fdflags, rightsBase) {
+  const C = _nodeFs.constants;
+  const wantRead  = (rightsBase & RIGHT_FD_READ)  !== 0n;
+  const wantWrite = (rightsBase & RIGHT_FD_WRITE) !== 0n;
+  let flags;
+  if (wantRead && wantWrite) flags = C.O_RDWR;
+  else if (wantWrite)        flags = C.O_WRONLY;
+  else                       flags = C.O_RDONLY;
+  if (oflags & OFLAG_CREAT)     flags |= C.O_CREAT;
+  if (oflags & OFLAG_EXCL)      flags |= C.O_EXCL;
+  if (oflags & OFLAG_TRUNC)     flags |= C.O_TRUNC;
+  if (oflags & OFLAG_DIRECTORY) flags |= C.O_DIRECTORY;
+  if (fdflags & FDFLAG_APPEND)  flags |= C.O_APPEND;
+  return flags;
+}
+
+// Write a wasi_filestat_t (64 bytes) at `retptr`.
+function writeFilestat(retptr, st, filetype) {
+  const view = new DataView(mem().buffer);
+  view.setBigUint64(retptr +  0, BigInt(st.dev ?? 0), true);   // dev
+  view.setBigUint64(retptr +  8, BigInt(st.ino ?? 0), true);   // ino
+  view.setUint8   (retptr + 16, filetype);                     // filetype (+7 pad)
+  view.setBigUint64(retptr + 24, BigInt(st.nlink ?? 1), true); // nlink
+  view.setBigUint64(retptr + 32, BigInt(st.size ?? 0), true);  // size
+  view.setBigUint64(retptr + 40, 0n, true);                    // atim (epoch)
+  view.setBigUint64(retptr + 48, 0n, true);                    // mtim
+  view.setBigUint64(retptr + 56, 0n, true);                    // ctim
+}
+
+// Read an iovec array into concatenated buffers.
+function readIovecs(iovs_ptr, iovs_len) {
+  const view = new DataView(mem().buffer);
+  const out = [];
+  for (let i = 0; i < iovs_len; i++) {
+    const ptr = view.getUint32(iovs_ptr + i * 8, true);
+    const len = view.getUint32(iovs_ptr + i * 8 + 4, true);
+    out.push({ ptr, len });
+  }
+  return out;
+}
 
 const wasi_imports = {
   // -- Clock ----------------------------------------------------------------
-  // clock_res_get(clock_id: u32, retptr: u32) -> errno
-  // Returns the resolution of the given clock in nanoseconds.
   clock_res_get(clock_id, retptr) {
     const view = new DataView(mem().buffer);
-    // Report 1ms resolution (1_000_000 ns) — matches Date.now() precision.
     view.setBigUint64(retptr, 1_000_000n, true);
     return WASI_SUCCESS;
   },
-
-  // clock_time_get(clock_id: u32, precision: u64, retptr: u32) -> errno
-  // Returns nanoseconds since epoch. All clock IDs map to Date.now().
-  clock_time_get(clock_id, precision_lo, precision_hi, retptr) {
+  clock_time_get(clock_id, precision, retptr) {
     const view = new DataView(mem().buffer);
-    const now_ns = BigInt(Date.now()) * 1_000_000n;
-    view.setBigUint64(retptr, now_ns, true);
+    view.setBigUint64(retptr, BigInt(Date.now()) * 1_000_000n, true);
     return WASI_SUCCESS;
   },
 
   // -- Random ---------------------------------------------------------------
-  // random_get(buf: u32, buf_len: u32) -> errno
   random_get(buf, buf_len) {
-    const bytes = new Uint8Array(mem().buffer, buf, buf_len);
-    crypto.getRandomValues(bytes);
+    crypto.getRandomValues(new Uint8Array(mem().buffer, buf, buf_len));
     return WASI_SUCCESS;
   },
 
   // -- File descriptor I/O --------------------------------------------------
-  // fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) -> errno
-  // Only handles stdout(1) and stderr(2) — routes to console.log/error.
   fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) {
-    if (fd !== 1 && fd !== 2) return WASI_EBADF;
     const view = new DataView(mem().buffer);
-    let written = 0;
-    let output = "";
-    for (let i = 0; i < iovs_len; i++) {
-      const ptr = view.getUint32(iovs_ptr + i * 8, true);
-      const len = view.getUint32(iovs_ptr + i * 8 + 4, true);
-      output += new TextDecoder().decode(new Uint8Array(mem().buffer, ptr, len));
-      written += len;
+    const iovs = readIovecs(iovs_ptr, iovs_len);
+
+    // stdout/stderr — route to console.
+    if (fd === 1 || fd === 2) {
+      let output = "";
+      let written = 0;
+      for (const { ptr, len } of iovs) {
+        output += new TextDecoder().decode(new Uint8Array(mem().buffer, ptr, len));
+        written += len;
+      }
+      if (fd === 1) console.log(output); else console.error(output);
+      view.setUint32(nwritten_ptr, written, true);
+      return WASI_SUCCESS;
     }
-    if (fd === 1) console.log(output);
-    else console.error(output);
-    view.setUint32(nwritten_ptr, written, true);
-    return WASI_SUCCESS;
+
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    try {
+      let total = 0;
+      for (const { ptr, len } of iovs) {
+        if (len === 0) continue;
+        const copy = Buffer.from(new Uint8Array(mem().buffer, ptr, len));
+        const n = _nodeFs.writeSync(entry.nodeFd, copy, 0, len, Number(entry.offset));
+        entry.offset += BigInt(n);
+        total += n;
+        if (n < len) break;
+      }
+      view.setUint32(nwritten_ptr, total, true);
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
   },
 
-  // fd_read(fd, iovs_ptr, iovs_len, nread_ptr) -> errno
-  // stdin is not supported in Workers.
   fd_read(fd, iovs_ptr, iovs_len, nread_ptr) {
     const view = new DataView(mem().buffer);
-    view.setUint32(nread_ptr, 0, true);
+    if (fd === 0) { view.setUint32(nread_ptr, 0, true); return WASI_SUCCESS; }
+
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    const iovs = readIovecs(iovs_ptr, iovs_len);
+    try {
+      let total = 0;
+      for (const { ptr, len } of iovs) {
+        if (len === 0) continue;
+        const tmp = Buffer.alloc(len);
+        const n = _nodeFs.readSync(entry.nodeFd, tmp, 0, len, Number(entry.offset));
+        if (n <= 0) break;
+        new Uint8Array(mem().buffer, ptr, n).set(tmp.subarray(0, n));
+        entry.offset += BigInt(n);
+        total += n;
+        if (n < len) break;
+      }
+      view.setUint32(nread_ptr, total, true);
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
+  },
+
+  fd_pwrite(fd, iovs_ptr, iovs_len, offset, nwritten_ptr) {
+    if (fd === 1 || fd === 2) return wasi_imports.fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr);
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    const view = new DataView(mem().buffer);
+    let off = Number(BigInt(offset));
+    try {
+      let total = 0;
+      for (const { ptr, len } of readIovecs(iovs_ptr, iovs_len)) {
+        if (len === 0) continue;
+        const copy = Buffer.from(new Uint8Array(mem().buffer, ptr, len));
+        const n = _nodeFs.writeSync(entry.nodeFd, copy, 0, len, off);
+        off += n; total += n;
+        if (n < len) break;
+      }
+      view.setUint32(nwritten_ptr, total, true);
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
+  },
+
+  fd_pread(fd, iovs_ptr, iovs_len, offset, nread_ptr) {
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    const view = new DataView(mem().buffer);
+    let off = Number(BigInt(offset));
+    try {
+      let total = 0;
+      for (const { ptr, len } of readIovecs(iovs_ptr, iovs_len)) {
+        if (len === 0) continue;
+        const tmp = Buffer.alloc(len);
+        const n = _nodeFs.readSync(entry.nodeFd, tmp, 0, len, off);
+        if (n <= 0) break;
+        new Uint8Array(mem().buffer, ptr, n).set(tmp.subarray(0, n));
+        off += n; total += n;
+        if (n < len) break;
+      }
+      view.setUint32(nread_ptr, total, true);
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
+  },
+
+  fd_seek(fd, offset, whence, newoffset_ptr) {
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    const view = new DataView(mem().buffer);
+    // Offset is __wasi_filedelta_t (i64) — normalize sign.
+    let delta = BigInt.asIntN(64, BigInt(offset));
+    let next;
+    if (whence === 0) next = delta;                          // SET
+    else if (whence === 1) next = entry.offset + delta;      // CUR
+    else if (whence === 2) {                                 // END
+      try {
+        const st = _nodeFs.fstatSync(entry.nodeFd);
+        next = BigInt(st.size) + delta;
+      } catch (err) { return wasiErrno(err); }
+    } else return WASI_EINVAL;
+    if (next < 0n) return WASI_EINVAL;
+    entry.offset = next;
+    view.setBigUint64(newoffset_ptr, next, true);
     return WASI_SUCCESS;
   },
 
-  // fd_seek(fd, offset_lo, offset_hi, whence, newoffset_ptr) -> errno
-  fd_seek(fd, offset_lo, offset_hi, whence, newoffset_ptr) {
-    return WASI_ENOSYS;
+  fd_close(fd) {
+    if (fd === 0 || fd === 1 || fd === 2) return WASI_SUCCESS;
+    const entry = _wasiFds.get(fd);
+    if (!entry) return WASI_EBADF;
+    if (entry.kind === "file") {
+      try { _nodeFs.closeSync(entry.nodeFd); } catch (err) { /* ignore */ }
+    }
+    _wasiFds.delete(fd);
+    return WASI_SUCCESS;
   },
 
-  // fd_filestat_get(fd, retptr) -> errno
   fd_filestat_get(fd, retptr) {
-    return WASI_ENOSYS;
+    if (fd === 0 || fd === 1 || fd === 2) {
+      writeFilestat(retptr, { size: 0 }, FT_CHARACTER_DEVICE);
+      return WASI_SUCCESS;
+    }
+    const entry = _wasiFds.get(fd);
+    if (!entry) return WASI_EBADF;
+    try {
+      if (entry.kind === "file") {
+        const st = _nodeFs.fstatSync(entry.nodeFd);
+        writeFilestat(retptr, st, statFiletype(st));
+      } else {
+        const st = _nodeFs.statSync(entry.path);
+        writeFilestat(retptr, st, FT_DIRECTORY);
+      }
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
   },
 
-  // fd_pwrite(fd, iovs_ptr, iovs_len, offset_lo, offset_hi, nwritten_ptr) -> errno
-  fd_pwrite(fd, iovs_ptr, iovs_len, offset_lo, offset_hi, nwritten_ptr) {
-    // Delegate to fd_write for stdout/stderr
-    return wasi_imports.fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr);
-  },
-
-  // fd_close(fd) -> errno
-  fd_close(fd) { return WASI_SUCCESS; },
-
-  // proc_exit(code) — terminates the Wasm instance.
-  proc_exit(code) { throw new Error(`[workers-zig] proc_exit(${code})`); },
-
-  // fd_pread(fd, iovs_ptr, iovs_len, offset_lo, offset_hi, nread_ptr) -> errno
-  fd_pread(fd, iovs_ptr, iovs_len, offset_lo, offset_hi, nread_ptr) {
+  fd_fdstat_get(fd, retptr) {
     const view = new DataView(mem().buffer);
-    view.setUint32(nread_ptr, 0, true);
-    return WASI_ENOSYS;
+    let filetype = FT_UNKNOWN;
+    if (fd === 0 || fd === 1 || fd === 2) filetype = FT_CHARACTER_DEVICE;
+    else {
+      const entry = _wasiFds.get(fd);
+      if (!entry) return WASI_EBADF;
+      filetype = entry.kind === "file" ? (entry.filetype ?? FT_REGULAR_FILE) : FT_DIRECTORY;
+    }
+    view.setUint8    (retptr + 0, filetype);
+    view.setUint16   (retptr + 2, 0, true);                      // fs_flags
+    // Grant full file rights so Zig doesn't refuse path_open etc.
+    view.setBigUint64(retptr + 8,  0xFFFF_FFFF_FFFF_FFFFn, true); // fs_rights_base
+    view.setBigUint64(retptr + 16, 0xFFFF_FFFF_FFFF_FFFFn, true); // fs_rights_inheriting
+    return WASI_SUCCESS;
   },
 
-  // fd_sync(fd) -> errno
-  fd_sync(fd) { return WASI_ENOSYS; },
+  fd_fdstat_set_flags(fd, flags) { return WASI_SUCCESS; },
+  fd_sync(fd) { return WASI_SUCCESS; },
+  fd_datasync(fd) { return WASI_SUCCESS; },
 
-  // fd_filestat_set_times(fd, atim_lo, atim_hi, mtim_lo, mtim_hi, fst_flags) -> errno
-  fd_filestat_set_times(fd, atim_lo, atim_hi, mtim_lo, mtim_hi, fst_flags) { return WASI_ENOSYS; },
+  fd_filestat_set_times(fd, atim, mtim, fst_flags) { return WASI_SUCCESS; },
+  fd_filestat_set_size(fd, size) {
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "file") return WASI_EBADF;
+    try { _nodeFs.ftruncateSync(entry.nodeFd, Number(BigInt(size))); return WASI_SUCCESS; }
+    catch (err) { return wasiErrno(err); }
+  },
 
-  // fd_filestat_set_size(fd, size_lo, size_hi) -> errno
-  fd_filestat_set_size(fd, size_lo, size_hi) { return WASI_ENOSYS; },
+  fd_readdir(fd, buf, buf_len, cookie, bufused_ptr) {
+    const view = new DataView(mem().buffer);
+    const entry = _wasiFds.get(fd);
+    if (!entry || (entry.kind !== "preopen" && entry.kind !== "dir")) {
+      view.setUint32(bufused_ptr, 0, true);
+      return WASI_EBADF;
+    }
+    // Cache entry listing on first call for a given cookie=0.
+    try {
+      if (!entry.dirents) {
+        entry.dirents = _nodeFs.readdirSync(entry.path, { withFileTypes: true });
+      }
+      const cookieN = Number(BigInt(cookie));
+      const enc = new TextEncoder();
+      let used = 0;
+      for (let i = cookieN; i < entry.dirents.length; i++) {
+        const d = entry.dirents[i];
+        const nameBytes = enc.encode(d.name);
+        const entrySize = 24 + nameBytes.length;
+        if (used + entrySize > buf_len) {
+          // Partial fit — WASI convention: write as much as fits including
+          // truncated trailing entry, so the caller grows its buffer.
+          const remain = buf_len - used;
+          if (remain >= 24) {
+            view.setBigUint64(buf + used +  0, BigInt(i + 1), true);        // d_next
+            view.setBigUint64(buf + used +  8, 0n, true);                   // d_ino
+            view.setUint32   (buf + used + 16, nameBytes.length, true);     // d_namlen
+            view.setUint32   (buf + used + 20, dirEntFiletype(d), true);    // d_type (+ pad)
+            const nameFit = Math.min(nameBytes.length, remain - 24);
+            new Uint8Array(mem().buffer, buf + used + 24, nameFit).set(nameBytes.subarray(0, nameFit));
+          }
+          used = buf_len;
+          break;
+        }
+        view.setBigUint64(buf + used +  0, BigInt(i + 1), true);
+        view.setBigUint64(buf + used +  8, 0n, true);
+        view.setUint32   (buf + used + 16, nameBytes.length, true);
+        view.setUint32   (buf + used + 20, dirEntFiletype(d), true);
+        new Uint8Array(mem().buffer, buf + used + 24, nameBytes.length).set(nameBytes);
+        used += entrySize;
+      }
+      view.setUint32(bufused_ptr, used, true);
+      return WASI_SUCCESS;
+    } catch (err) {
+      view.setUint32(bufused_ptr, 0, true);
+      return wasiErrno(err);
+    }
+  },
 
-  // fd_readdir(fd, buf, buf_len, cookie_lo, cookie_hi, bufused_ptr) -> errno
-  fd_readdir(fd, buf, buf_len, cookie_lo, cookie_hi, bufused_ptr) {
+  // -- Path operations ------------------------------------------------------
+  path_open(dirfd, dirflags, path_ptr, path_len, oflags, rights_base, rights_inheriting, fdflags, opened_fd_ptr) {
+    const view = new DataView(mem().buffer);
+    const rel = readStr(path_ptr, path_len);
+    const full = resolveAt(dirfd, rel);
+    if (full == null) return WASI_EBADF;
+
+    const rightsBase = BigInt(rights_base);
+    try {
+      // Resolve directory vs file — if OFLAG_DIRECTORY set, use stat to verify.
+      if (oflags & OFLAG_DIRECTORY) {
+        const st = _nodeFs.statSync(full);
+        if (!st.isDirectory()) return WASI_ENOTDIR;
+        const wasiFd = _wasiNextFd++;
+        _wasiFds.set(wasiFd, { kind: "dir", path: full });
+        view.setUint32(opened_fd_ptr, wasiFd, true);
+        return WASI_SUCCESS;
+      }
+
+      // Regular file path.
+      const flags = wasiOpenFlags(oflags, fdflags, rightsBase);
+      const nodeFd = _nodeFs.openSync(full, flags, 0o666);
+      let filetype = FT_REGULAR_FILE;
+      try {
+        const st = _nodeFs.fstatSync(nodeFd);
+        filetype = statFiletype(st);
+      } catch {}
+      const wasiFd = _wasiNextFd++;
+      _wasiFds.set(wasiFd, { kind: "file", nodeFd, offset: 0n, filetype, path: full });
+      view.setUint32(opened_fd_ptr, wasiFd, true);
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
+  },
+
+  path_filestat_get(dirfd, flags, path_ptr, path_len, retptr) {
+    const rel = readStr(path_ptr, path_len);
+    const full = resolveAt(dirfd, rel);
+    if (full == null) return WASI_EBADF;
+    try {
+      const st = (flags & 1) ? _nodeFs.statSync(full) : _nodeFs.lstatSync(full);
+      writeFilestat(retptr, st, statFiletype(st));
+      return WASI_SUCCESS;
+    } catch (err) { return wasiErrno(err); }
+  },
+
+  path_create_directory(dirfd, path_ptr, path_len) {
+    const full = resolveAt(dirfd, readStr(path_ptr, path_len));
+    if (full == null) return WASI_EBADF;
+    try { _nodeFs.mkdirSync(full); return WASI_SUCCESS; }
+    catch (err) { return wasiErrno(err); }
+  },
+
+  path_remove_directory(dirfd, path_ptr, path_len) {
+    const full = resolveAt(dirfd, readStr(path_ptr, path_len));
+    if (full == null) return WASI_EBADF;
+    try { _nodeFs.rmdirSync(full); return WASI_SUCCESS; }
+    catch (err) { return wasiErrno(err); }
+  },
+
+  path_unlink_file(dirfd, path_ptr, path_len) {
+    const full = resolveAt(dirfd, readStr(path_ptr, path_len));
+    if (full == null) return WASI_EBADF;
+    try { _nodeFs.unlinkSync(full); return WASI_SUCCESS; }
+    catch (err) { return wasiErrno(err); }
+  },
+
+  path_rename(old_fd, old_ptr, old_len, new_fd, new_ptr, new_len) {
+    const from = resolveAt(old_fd, readStr(old_ptr, old_len));
+    const to   = resolveAt(new_fd, readStr(new_ptr, new_len));
+    if (from == null || to == null) return WASI_EBADF;
+    try { _nodeFs.renameSync(from, to); return WASI_SUCCESS; }
+    catch (err) { return wasiErrno(err); }
+  },
+
+  path_link(old_fd, old_flags, old_ptr, old_len, new_fd, new_ptr, new_len) { return WASI_ENOSYS; },
+  path_symlink(old_ptr, old_len, dirfd, new_ptr, new_len) { return WASI_ENOSYS; },
+  path_readlink(dirfd, path_ptr, path_len, buf, buf_len, bufused_ptr) {
     const view = new DataView(mem().buffer);
     view.setUint32(bufused_ptr, 0, true);
     return WASI_ENOSYS;
   },
 
-  // -- Path operations (not supported in Workers) ----------------------------
-  path_open(fd, dirflags, path, path_len, oflags, fs_rights_base_lo, fs_rights_base_hi, fs_rights_inheriting_lo, fs_rights_inheriting_hi, fdflags, opened_fd_ptr) { return WASI_ENOSYS; },
-  path_filestat_get(fd, flags, path, path_len, retptr) { return WASI_ENOSYS; },
-  path_create_directory(fd, path, path_len) { return WASI_ENOSYS; },
-  path_link(old_fd, old_flags, old_path, old_path_len, new_fd, new_path, new_path_len) { return WASI_ENOSYS; },
-  path_symlink(old_path, old_path_len, fd, new_path, new_path_len) { return WASI_ENOSYS; },
-  path_readlink(fd, path, path_len, buf, buf_len, bufused_ptr) {
+  // -- Preopens -------------------------------------------------------------
+  fd_prestat_get(fd, retptr) {
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "preopen") return WASI_EBADF;
     const view = new DataView(mem().buffer);
-    view.setUint32(bufused_ptr, 0, true);
-    return WASI_ENOSYS;
+    view.setUint8 (retptr + 0, 0);                                           // tag = dir
+    view.setUint32(retptr + 4, new TextEncoder().encode(entry.path).length, true);
+    return WASI_SUCCESS;
   },
-  path_rename(fd, old_path, old_path_len, new_fd, new_path, new_path_len) { return WASI_ENOSYS; },
-  path_remove_directory(fd, path, path_len) { return WASI_ENOSYS; },
-  path_unlink_file(fd, path, path_len) { return WASI_ENOSYS; },
+  fd_prestat_dir_name(fd, path_ptr, path_len) {
+    const entry = _wasiFds.get(fd);
+    if (!entry || entry.kind !== "preopen") return WASI_EBADF;
+    const bytes = new TextEncoder().encode(entry.path);
+    if (bytes.length > path_len) return WASI_EINVAL;
+    new Uint8Array(mem().buffer, path_ptr, bytes.length).set(bytes);
+    return WASI_SUCCESS;
+  },
 
-  // -- Stubs for env/args/prestat --------------------------------------------
-  environ_get(environ, environ_buf) { return WASI_SUCCESS; },
+  // -- Env / args / misc ----------------------------------------------------
+  //
+  // environ_* and args_* are backed by node:process.  `process.env` on Workers
+  // is populated with bindings + secrets when the compat date is 2025-04-01+
+  // (or the `nodejs_compat_populate_process_env` flag is set), so Zig code can
+  // reach them through std.posix.getenv / std.process.getEnvMap.
+  environ_get(environ, environ_buf) {
+    const view = new DataView(mem().buffer);
+    const entries = _wasiEnvEntries();
+    let bufPos = environ_buf;
+    for (let i = 0; i < entries.length; i++) {
+      view.setUint32(environ + i * 4, bufPos, true);
+      const bytes = _wasiTextEnc.encode(entries[i] + "\0");
+      new Uint8Array(mem().buffer, bufPos, bytes.length).set(bytes);
+      bufPos += bytes.length;
+    }
+    return WASI_SUCCESS;
+  },
   environ_sizes_get(count_ptr, buf_size_ptr) {
     const view = new DataView(mem().buffer);
-    view.setUint32(count_ptr, 0, true);
-    view.setUint32(buf_size_ptr, 0, true);
+    const entries = _wasiEnvEntries();
+    let total = 0;
+    for (const e of entries) total += _wasiTextEnc.encode(e).length + 1;
+    view.setUint32(count_ptr, entries.length, true);
+    view.setUint32(buf_size_ptr, total, true);
     return WASI_SUCCESS;
   },
-  args_get(argv, argv_buf) { return WASI_SUCCESS; },
+  args_get(argv, argv_buf) {
+    const view = new DataView(mem().buffer);
+    const args = _wasiArgs();
+    let bufPos = argv_buf;
+    for (let i = 0; i < args.length; i++) {
+      view.setUint32(argv + i * 4, bufPos, true);
+      const bytes = _wasiTextEnc.encode(args[i] + "\0");
+      new Uint8Array(mem().buffer, bufPos, bytes.length).set(bytes);
+      bufPos += bytes.length;
+    }
+    return WASI_SUCCESS;
+  },
   args_sizes_get(argc_ptr, buf_size_ptr) {
     const view = new DataView(mem().buffer);
-    view.setUint32(argc_ptr, 0, true);
-    view.setUint32(buf_size_ptr, 0, true);
+    const args = _wasiArgs();
+    let total = 0;
+    for (const a of args) total += _wasiTextEnc.encode(a).length + 1;
+    view.setUint32(argc_ptr, args.length, true);
+    view.setUint32(buf_size_ptr, total, true);
     return WASI_SUCCESS;
   },
-  fd_prestat_get(fd, retptr) { return WASI_EBADF; },
-  fd_prestat_dir_name(fd, path, path_len) { return WASI_EBADF; },
-  fd_fdstat_get(fd, retptr) { return WASI_EBADF; },
   sched_yield() { return WASI_SUCCESS; },
   poll_oneoff(in_ptr, out_ptr, nsubscriptions, nevents_ptr) { return WASI_ENOSYS; },
+
+  proc_exit(code) { throw new Error(`[workers-zig] proc_exit(${code})`); },
 };
+
+function dirEntFiletype(d) {
+  if (d.isFile && d.isFile()) return FT_REGULAR_FILE;
+  if (d.isDirectory && d.isDirectory()) return FT_DIRECTORY;
+  if (d.isSymbolicLink && d.isSymbolicLink()) return FT_SYMBOLIC_LINK;
+  if (d.isCharacterDevice && d.isCharacterDevice()) return FT_CHARACTER_DEVICE;
+  if (d.isBlockDevice && d.isBlockDevice()) return FT_BLOCK_DEVICE;
+  return FT_UNKNOWN;
+}
 
 // ---------------------------------------------------------------------------
 // Init

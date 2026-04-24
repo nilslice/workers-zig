@@ -8,7 +8,7 @@ const Router = workers.Router;
 const Socket = workers.Socket;
 
 /// HTTP handler — demonstrates outbound TCP socket and outbound HTTP fetch.
-pub fn fetch(request: *Request, _: *Env, _: *Context) !Response {
+pub fn fetch(request: *Request, env: *Env, _: *Context) !Response {
     const url = try request.url();
     const path = Router.extractPath(url);
 
@@ -17,7 +17,7 @@ pub fn fetch(request: *Request, _: *Env, _: *Context) !Response {
     }
 
     if (std.mem.eql(u8, path, "/fetch-example")) {
-        const alloc = std.heap.wasm_allocator;
+        const alloc = env.allocator;
         var resp = try workers.fetch(alloc, "https://example.com", .{});
         defer resp.deinit();
 
@@ -28,7 +28,7 @@ pub fn fetch(request: *Request, _: *Env, _: *Context) !Response {
     }
 
     if (std.mem.eql(u8, path, "/tcp-example")) {
-        const alloc = std.heap.wasm_allocator;
+        const alloc = env.allocator;
         var socket = Socket.connect(alloc, "example.com", 80, .{});
         defer socket.close();
 

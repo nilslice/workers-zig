@@ -25,7 +25,7 @@ pub fn fetch(request: *Request, env: *Env, _: *Context) !Response {
 
     // -- WebSocket echo -------------------------------------------------
     if (std.mem.eql(u8, path, "/ws")) {
-        const alloc = std.heap.wasm_allocator;
+        const alloc = workers.allocator;
         var ws = WebSocket.init(alloc);
         ws.accept();
         ws.sendText("connected");

@@ -302,12 +302,12 @@ pub fn fetch(request: *Request, env: *Env, ctx: *Context) !Response {
 
     // -- WASI environ (backed by process.env) ---------------------------------
     if (std.mem.startsWith(u8, path, "/env-wasi")) {
-        return handleEnvWasi(path);
+        return handleEnvWasi(env, path);
     }
 
     // -- node:tls-backed TCP socket -------------------------------------------
     if (std.mem.startsWith(u8, path, "/tls")) {
-        return handleTls(path);
+        return handleTls(env, path);
     }
 
     // -- KV tests -----------------------------------------------------------
@@ -1056,7 +1056,7 @@ fn handleDO(_: *Request, env: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 fn handleWebSocket(request: *Request, _: *Env, path: []const u8) !Response {
     _ = request;
-    const alloc = std.heap.wasm_allocator;
+    const alloc = workers.allocator;
 
     // -- Echo: echoes text and binary messages back to the client -------------
     if (std.mem.eql(u8, path, "/ws/echo")) {
@@ -1451,12 +1451,12 @@ fn fsErrResponse(comptime op: []const u8, err: anyerror) Response {
 // WASI environ tests — exercise std.posix.getenv through the shim-backed
 // environ_get/environ_sizes_get syscalls (which route to process.env).
 // ---------------------------------------------------------------------------
-fn handleEnvWasi(path: []const u8) !Response {
-    const alloc = std.heap.wasm_allocator;
-    const env: std.process.Environ = .{ .block = .global };
+fn handleEnvWasi(env: *Env, path: []const u8) !Response {
+    const alloc = env.allocator;
+    const wasi_env: std.process.Environ = .{ .block = .global };
 
     if (std.mem.eql(u8, path, "/env-wasi/getenv")) {
-        const val = env.getAlloc(alloc, "GREETING") catch |err| switch (err) {
+        const val = wasi_env.getAlloc(alloc, "GREETING") catch |err| switch (err) {
             error.EnvironmentVariableMissing => return Response.ok("<missing>"),
             else => return err,
         };
@@ -1464,7 +1464,7 @@ fn handleEnvWasi(path: []const u8) !Response {
         return Response.ok(val);
     }
     if (std.mem.eql(u8, path, "/env-wasi/missing")) {
-        const val = env.getAlloc(alloc, "NO_SUCH_VAR") catch |err| switch (err) {
+        const val = wasi_env.getAlloc(alloc, "NO_SUCH_VAR") catch |err| switch (err) {
             error.EnvironmentVariableMissing => return Response.ok("<missing>"),
             else => return err,
         };
@@ -1472,7 +1472,7 @@ fn handleEnvWasi(path: []const u8) !Response {
         return Response.ok(val);
     }
     if (std.mem.eql(u8, path, "/env-wasi/list")) {
-        var map = try env.createMap(alloc);
+        var map = try wasi_env.createMap(alloc);
         defer map.deinit();
         var w = std.Io.Writer.Allocating.init(alloc);
         defer w.deinit();
@@ -1489,8 +1489,8 @@ fn handleEnvWasi(path: []const u8) !Response {
 // node:tls-backed socket — verify the Socket.connectTls path.  Does an
 // HTTP/1.0 GET over TLS to example.com:443.
 // ---------------------------------------------------------------------------
-fn handleTls(path: []const u8) !Response {
-    const alloc = std.heap.wasm_allocator;
+fn handleTls(env: *Env, path: []const u8) !Response {
+    const alloc = env.allocator;
     const Socket = workers.Socket;
 
     if (std.mem.eql(u8, path, "/tls/get-example")) {
@@ -2062,8 +2062,8 @@ fn handleTailVerify(_: *Request, env: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // Crypto tests
 // ---------------------------------------------------------------------------
-fn handleCrypto(_: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleCrypto(_: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/crypto/digest-sha256")) {
         const hash = try Crypto.digest(allocator, .sha256, "hello world");
@@ -2117,8 +2117,8 @@ fn handleCrypto(_: *Request, _: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // FormData tests
 // ---------------------------------------------------------------------------
-fn handleFormData(request: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleFormData(request: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/formdata/parse")) {
         var form = FormData.fromRequest(allocator, request.handle);
@@ -2161,8 +2161,8 @@ fn handleFormData(request: *Request, _: *Env, path: []const u8) !Response {
 // ---------------------------------------------------------------------------
 // HTMLRewriter tests
 // ---------------------------------------------------------------------------
-fn handleRewriter(_: *Request, _: *Env, path: []const u8) !Response {
-    const allocator = std.heap.wasm_allocator;
+fn handleRewriter(_: *Request, env: *Env, path: []const u8) !Response {
+    const allocator = env.allocator;
 
     if (std.mem.eql(u8, path, "/rewriter/set-attr")) {
         // Create an HTML response, then transform it

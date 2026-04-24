@@ -526,8 +526,13 @@ pub fn tail(events: []const workers.Tail.TraceItem, env: *workers.Env, _: *worke
 ### Convenience Functions
 
 ```zig
+// Allocators: `env.allocator` is a per-request arena freed when the
+// request ends — prefer it inside `fetch` handlers. `workers.allocator`
+// is the process-lifetime wasm heap, for DOs / long-lived state.
+const alloc = env.allocator;
+
 // Outbound HTTP fetch
-var resp = try workers.fetch(allocator, "https://api.example.com/data", .{
+var resp = try workers.fetch(alloc, "https://api.example.com/data", .{
     .method = .POST,
     .body = "{\"key\": \"value\"}",
 });
